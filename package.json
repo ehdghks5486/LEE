@@ -1,0 +1,16 @@
+{
+  "name": "blackout-order-app",
+  "version": "0.1.0",
+  "description": "BLACKOUT 전용 주문관리 앱 (업체·관리자·제조공장 3자 주문관리, PWA)",
+  "private": true,
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server/index.js",
+    "dev": "node --no-warnings=ExperimentalWarning --watch server/index.js",
+    "test": "node --no-warnings=ExperimentalWarning --test \"test/**/*.test.js\""
+  },
+  "license": "UNLICENSED"
+}
