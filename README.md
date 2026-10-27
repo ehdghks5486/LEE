@@ -43,7 +43,7 @@ npm test             # 견적 계산 · API 권한 · 주문 흐름 테스트
 | `SMARTSTORE_MODE` | 자동 | `live` / `mock` / `off`. 미설정 시 키가 있으면 live, 없으면 off |
 | `SMARTSTORE_POLL_MINUTES` | `5` | 신규 주문·취소 요청 수집 주기(분) |
 
-운영 배포 시에는 HTTPS 리버스 프록시(nginx, Caddy 등) 뒤에 두고 `SECURE_COOKIES=1`을 설정하세요. PWA 설치(홈 화면 추가)는 HTTPS에서만 동작합니다.
+운영 서버 설치는 [deploy/README.md](deploy/README.md)를 보세요. Ubuntu 서버에서 명령 한 줄로 Node 설치 · 자동 시작 · HTTPS · 일일 백업까지 설정됩니다. PWA 설치(홈 화면 추가)는 HTTPS에서만 동작합니다.
 
 ## 휴대폰 설치 (PWA)
 
@@ -177,6 +177,8 @@ server/
 public/
   index.html · app.js · styles.css   PWA 프론트엔드 (빌드 불필요)
   manifest.webmanifest · sw.js       설치 · 오프라인 셸
+  backup.js   SQLite 온라인 백업 (VACUUM INTO)
+deploy/       서버 설치 스크립트 · 배포 안내
 test/         node --test 기반 테스트
 data/         SQLite 데이터베이스 (git 제외)
 ```
