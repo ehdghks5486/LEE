@@ -11,6 +11,8 @@ const { FRAME_COLORS, FABRIC_COLORS } = require('./pricing');
 const { createSync } = require('./smartstore/sync');
 const { MockNaverClient } = require('./smartstore/mock');
 const { NaverCommerceClient } = require('./smartstore/client');
+const { createTrackingLookup } = require('./tracking-lookup');
+const daesin = require('./carriers/daesin');
 
 const { HttpError, STATUSES } = orders;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -114,17 +116,27 @@ function resolveSmartstore(opt = {}) {
   return { mode: 'off', client: null };
 }
 
-function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart = false } = {}) {
+function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart = false, trackingSearch = daesin.searchByReceiverPhone, trackingDelayMs } = {}) {
   const db = openDatabase(dbPath || process.env.DB_PATH || path.join(__dirname, '..', 'data', 'blackout.db'));
   auth.purgeExpired(db);
   const router = createRouter();
 
   const ss = resolveSmartstore(smartstore);
   const sync = createSync({ db, client: ss.client, mode: ss.mode, pollMinutes: Number(smartstore.pollMinutes || process.env.SMARTSTORE_POLL_MINUTES) || 5 });
-  orders.setHooks({
-    afterShipped: (order) => { sync.dispatchOrder(order).catch(() => {}); },
+  const tracking = createTrackingLookup({
+    db, search: trackingSearch, delayMs: trackingDelayMs,
+    onFound: (order) => { sync.dispatchOrder(order).catch(() => {}); },
   });
-  if (autoStart) sync.start();
+  orders.setHooks({
+    afterShipped: (order) => {
+      if (order.tracking_no) sync.dispatchOrder(order).catch(() => {});
+      else if (order.tracking_carrier === orders.AUTO_LOOKUP_CARRIER) tracking.request(order);
+    },
+  });
+  if (autoStart) {
+    sync.start();
+    tracking.start();
+  }
 
   // ----- auth -----
   router.add('POST', '/api/auth/login', async (ctx) => {
@@ -179,6 +191,8 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
       fabric_colors: FABRIC_COLORS,
       statuses: Object.entries(STATUSES).map(([code, name]) => ({ code, name })),
       carriers: CARRIERS,
+      default_carrier: CARRIERS.includes(settings.default_carrier) ? settings.default_carrier : CARRIERS[0],
+      auto_lookup_carrier: orders.AUTO_LOOKUP_CARRIER,
       limits: { min_size_mm: Number(settings.min_size_mm), max_size_mm: Number(settings.max_size_mm) },
     };
     if (ctx.user.role !== 'factory') {
@@ -222,6 +236,7 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
   router.add('GET', '/api/orders/:id', async (ctx) => {
     requireRole(ctx.user);
     const data = orders.getOrder(db, ctx.user, Number(ctx.params.id));
+    if (ctx.user.role !== 'vendor') data.tracking_lookup = tracking.get(data.order.id);
     if (ctx.user.role === 'admin' && data.order.source === 'smartstore') {
       const row = sync.getRowByOrder(data.order.id);
       if (row) {
@@ -306,7 +321,20 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
   });
   router.add('POST', '/api/orders/:id/tracking', async (ctx) => {
     requireRole(ctx.user, 'factory', 'admin');
-    json(ctx.res, 200, { order: orders.updateTracking(db, ctx.user, Number(ctx.params.id), ctx.body) });
+    const id = Number(ctx.params.id);
+    const order = orders.updateTracking(db, ctx.user, id, ctx.body);
+    tracking.markManual(id);
+    json(ctx.res, 200, { order });
+  });
+  // 송장 자동 찾기: { action: 'retry' } 지금 다시 찾기 · { action: 'choose', tracking_no } 후보 고르기
+  router.add('POST', '/api/orders/:id/tracking-lookup', async (ctx) => {
+    requireRole(ctx.user, 'factory', 'admin');
+    const id = Number(ctx.params.id);
+    orders.getOrder(db, ctx.user, id); // 볼 수 있는 주문인지 확인
+    if (ctx.body.action === 'choose') tracking.choose(id, String(ctx.body.tracking_no || ''), ctx.user);
+    else if (ctx.body.action === 'retry') await tracking.retry(id);
+    else throw new HttpError(400, 'action 은 retry 또는 choose 입니다.');
+    json(ctx.res, 200, { tracking_lookup: tracking.get(id), order: orders.getOrder(db, ctx.user, id).order });
   });
 
   // ----- admin: vendors -----
@@ -408,7 +436,10 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
   router.add('PUT', '/api/settings', async (ctx) => {
     requireRole(ctx.user, 'admin');
     const numericKeys = ['default_unit_price_per_sqm', 'min_billable_area_sqm', 'shipping_fee', 'factory_cost_per_sqm', 'min_size_mm', 'max_size_mm'];
-    const known = new Set(['company_name', ...numericKeys]);
+    const known = new Set(['company_name', 'default_carrier', ...numericKeys]);
+    if (ctx.body.settings?.default_carrier !== undefined && !CARRIERS.includes(String(ctx.body.settings.default_carrier))) {
+      throw new HttpError(400, '기본 택배사를 목록에서 골라 주세요.');
+    }
     const upd = db.prepare("UPDATE settings SET value = ?, updated_at = datetime('now','localtime') WHERE key = ?");
     db.exec('BEGIN');
     try {
@@ -497,9 +528,10 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
   });
   server.db = db;
   server.sync = sync;
+  server.tracking = tracking;
   server.naverClient = ss.client;
   const origClose = server.close.bind(server);
-  server.close = (cb) => { sync.stop(); return origClose(cb); };
+  server.close = (cb) => { sync.stop(); tracking.stop(); return origClose(cb); };
   return server;
 }
 

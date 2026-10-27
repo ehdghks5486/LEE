@@ -161,6 +161,27 @@ function requireText(body, key, label, { max = 200, required = true } = {}) {
   return s;
 }
 
+// 이 택배사는 송장 없이 출고하면 tracking-lookup 이 받는 분 전화번호로 송장번호를 찾아 채운다.
+const AUTO_LOOKUP_CARRIER = '대신택배';
+const TRACKING_DIGITS = { 대신택배: 13 };
+
+/** 송장번호 정리·검증. 자릿수가 정해진 택배사는 하이픈·띄어쓰기를 지우고 자릿수를 확인한다. */
+function normalizeTrackingNo(carrier, raw, { required = true } = {}) {
+  const v = raw === undefined || raw === null ? '' : String(raw).trim();
+  if (!v) {
+    if (required) throw new HttpError(400, '송장번호를 입력해 주세요.');
+    return null;
+  }
+  const digits = TRACKING_DIGITS[carrier];
+  if (digits) {
+    const d = v.replace(/[\s-]/g, '');
+    if (!/^\d+$/.test(d) || d.length !== digits) throw new HttpError(400, `${carrier} 송장번호는 숫자 ${digits}자리입니다. (입력한 값: ${d.length}자리)`);
+    return d;
+  }
+  if (!/^[0-9A-Za-z-]{6,40}$/.test(v)) throw new HttpError(400, '송장번호 형식을 확인해 주세요.');
+  return v;
+}
+
 function getOrderRow(db, id) {
   return db.prepare(`${BASE_SELECT} WHERE o.id = ?`).get(id);
 }
@@ -420,13 +441,13 @@ function changeStatus(db, user, id, body) {
   if (to === 'delivered') sets.push("delivered_at = datetime('now','localtime')");
   if (to === 'shipped') {
     const carrier = requireText(body, 'tracking_carrier', '택배사', { max: 30 });
-    const trackingNo = requireText(body, 'tracking_no', '송장번호', { max: 40 });
-    if (!/^[0-9A-Za-z-]{6,40}$/.test(trackingNo)) throw new HttpError(400, '송장번호 형식을 확인해 주세요.');
+    const trackingNo = normalizeTrackingNo(carrier, body.tracking_no, { required: carrier !== AUTO_LOOKUP_CARRIER });
     sets.push('tracking_carrier = ?', 'tracking_no = ?', "shipped_at = datetime('now','localtime')");
     params.push(carrier, trackingNo);
     tracking = { tracking_carrier: carrier, tracking_no: trackingNo };
   }
-  const note = body.note ? String(body.note).slice(0, 500) : null;
+  let note = body.note ? String(body.note).slice(0, 500) : null;
+  if (tracking && !tracking.tracking_no) note = [note, `송장번호는 ${AUTO_LOOKUP_CARRIER}에서 자동으로 찾습니다.`].filter(Boolean).join(' · ');
 
   // 외부 연동: 승인 전 발주확인 (실패 시 승인 중단)
   let hookNote = null;
@@ -455,6 +476,23 @@ function systemNote(db, id, note, details) {
   addHistory(db, id, SYSTEM_ACTOR, 'note', { note, details });
 }
 
+const LOOKUP_ACTOR = { id: null, role: 'admin', name: '송장 자동 찾기', system: true };
+/** 송장 자동 찾기가 찾은 번호를 등록. 이미 송장이 있으면 덮어쓰지 않는다. */
+function systemSetTracking(db, id, trackingNo, note) {
+  const order = getOrderRow(db, id);
+  if (!order || order.tracking_no) return order;
+  db.exec('BEGIN');
+  try {
+    db.prepare("UPDATE orders SET tracking_no = ?, updated_at = datetime('now','localtime') WHERE id = ?").run(trackingNo, id);
+    addHistory(db, id, LOOKUP_ACTOR, 'tracking', { note, details: { tracking_no: { from: null, to: trackingNo } } });
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  return getOrderRow(db, id);
+}
+
 function updateTracking(db, user, id, body) {
   // 출고 후 송장 정정 (공장/관리자)
   const order = getOrderRow(db, id);
@@ -462,8 +500,7 @@ function updateTracking(db, user, id, body) {
   if (!['factory', 'admin'].includes(user.role)) throw new HttpError(403, '권한이 없습니다.');
   if (!['shipped', 'delivered'].includes(order.status)) throw new HttpError(409, '출고된 주문만 송장을 수정할 수 있습니다.');
   const carrier = requireText(body, 'tracking_carrier', '택배사', { max: 30 });
-  const trackingNo = requireText(body, 'tracking_no', '송장번호', { max: 40 });
-  if (!/^[0-9A-Za-z-]{6,40}$/.test(trackingNo)) throw new HttpError(400, '송장번호 형식을 확인해 주세요.');
+  const trackingNo = normalizeTrackingNo(carrier, body.tracking_no);
   db.exec('BEGIN');
   try {
     db.prepare("UPDATE orders SET tracking_carrier = ?, tracking_no = ?, updated_at = datetime('now','localtime') WHERE id = ?").run(carrier, trackingNo, id);
@@ -548,5 +585,5 @@ function stats(db, { from, to } = {}) {
 module.exports = {
   STATUSES, TRANSITIONS, HttpError, listOrders, createOrder, updateOrder, changeStatus, updateTracking, getOrder, stats,
   quoteFor, resolveVendorForOrder, serializeOrder, setHooks, createSmartstoreOrder, systemChangeStatus, systemNote, getOrderRow,
-  SYSTEM_ACTOR,
+  SYSTEM_ACTOR, AUTO_LOOKUP_CARRIER, normalizeTrackingNo, systemSetTracking,
 };

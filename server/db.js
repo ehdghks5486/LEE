@@ -153,6 +153,18 @@ CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- 송장 자동 찾기 (송장 없이 출고된 대신택배 주문)
+CREATE TABLE IF NOT EXISTS tracking_lookups (
+  order_id INTEGER PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'pending',   -- pending | multiple | not_found | found | manual
+  candidates TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  last_tried_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 `;
 
 const DEFAULT_SETTINGS = [
@@ -163,6 +175,7 @@ const DEFAULT_SETTINGS = [
   ['factory_cost_per_sqm', '60000', '공장 제작원가 (원/㎡) - 마진 계산용'],
   ['min_size_mm', '300', '최소 제작 치수 (mm)'],
   ['max_size_mm', '3000', '최대 제작 치수 (mm)'],
+  ['default_carrier', '대신택배', '기본 택배사 (공장 출고 시 처음 선택)'],
 ];
 
 const DEFAULT_PRODUCT_TYPES = [

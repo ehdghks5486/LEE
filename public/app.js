@@ -336,7 +336,7 @@
     let data;
     try { data = await api('GET', `/api/orders/${id}`); }
     catch (err) { main.innerHTML = `<div class="error">${esc(err.message)}</div><a class="btn" href="#/orders">목록으로</a>`; return; }
-    const { order: o, history, allowed_transitions, smartstore: ssInfo } = data;
+    const { order: o, history, allowed_transitions, smartstore: ssInfo, tracking_lookup: tl } = data;
     const role = state.user.role;
     const m = state.meta;
     const canEdit = role === 'admin' ? ['received', 'on_hold', 'approved'].includes(o.status) : role === 'vendor' ? ['received', 'on_hold'].includes(o.status) : false;
@@ -367,8 +367,9 @@
           <dt>수령인</dt><dd>${esc(o.recipient_name)}</dd>
           <dt>연락처</dt><dd><a href="tel:${esc(o.recipient_phone)}">${esc(o.recipient_phone)}</a></dd>
           <dt>주소</dt><dd>${o.zip_code ? `(${esc(o.zip_code)}) ` : ''}${esc(o.address)} ${esc(o.address_detail || '')}</dd>
-          <dt>택배사 / 송장</dt><dd>${o.tracking_no ? `${esc(o.tracking_carrier)} <strong>${esc(o.tracking_no)}</strong>` : '<span class="muted">미등록</span>'}</dd>
+          <dt>택배사 / 송장</dt><dd>${o.tracking_no ? `${esc(o.tracking_carrier)} <strong>${esc(o.tracking_no)}</strong>` : tl && !['found', 'manual'].includes(tl.status) ? `${esc(o.tracking_carrier)} <span class="muted">송장 찾는 중</span>` : '<span class="muted">미등록</span>'}</dd>
         </dl>
+        ${!o.tracking_no && tl && !['found', 'manual'].includes(tl.status) ? trackingLookupBox(tl) : ''}
       </div>
 
       ${role !== 'factory' ? `
@@ -426,6 +427,15 @@
 
     if (role === 'factory') document.getElementById('printBtn').onclick = () => window.print();
     renderActions(document.getElementById('actionArea'), o, allowed_transitions, role);
+
+    main.querySelectorAll('[data-lookup]').forEach((b) => (b.onclick = async () => {
+      busy(b, true);
+      try {
+        const r = await api('POST', `/api/orders/${o.id}/tracking-lookup`, b.dataset.lookup === 'retry' ? { action: 'retry' } : { action: 'choose', tracking_no: b.dataset.lookup });
+        toast(r.order.tracking_no ? `송장번호 ${r.order.tracking_no} 등록` : r.tracking_lookup.status === 'multiple' ? '후보를 골라 주세요.' : '아직 찾지 못했습니다.');
+        render();
+      } catch (err) { toast(err.message, true); busy(b, false); }
+    }));
 
     if (role === 'admin' && document.getElementById('dispatchRetry')) {
       document.getElementById('dispatchRetry').onclick = async () => {
@@ -497,6 +507,24 @@
     return esc(v);
   }
 
+  // 송장 없이 출고된 대신택배 주문: 자동 찾기 상태 · 후보 고르기
+  function trackingLookupBox(tl) {
+    const tried = tl.attempts ? ` · ${tl.attempts}회 조회${tl.last_error ? ` · <span class="error">${esc(tl.last_error)}</span>` : ''}` : '';
+    if (tl.status === 'multiple') {
+      return `<div class="notice no-print"><strong>송장 후보 ${tl.candidates.length}건</strong> · 맞는 송장을 골라 주세요.
+        <div class="table-wrap"><table><thead><tr><th>접수</th><th>송장번호</th><th>받는 분</th><th>도착 영업소</th><th>상태</th><th></th></tr></thead><tbody>
+        ${tl.candidates.map((c) => `<tr><td>${esc(c.received_at)}</td><td>${esc(c.tracking_no)}</td><td>${esc(c.receiver)}</td><td>${esc(c.branch)}</td><td>${esc(c.status)}</td>
+          <td><button class="btn sm primary" data-lookup="${esc(c.tracking_no)}">이 송장</button></td></tr>`).join('')}
+        </tbody></table></div></div>`;
+    }
+    if (tl.status === 'not_found') {
+      return `<div class="notice no-print">대신택배에서 송장을 찾지 못했습니다${tried}. 아래 「송장 수정」으로 직접 입력하거나 다시 찾아 주세요.
+        <div class="actions"><button class="btn sm" data-lookup="retry">지금 다시 찾기</button></div></div>`;
+    }
+    return `<div class="notice no-print">대신택배에서 받는 분 전화번호로 송장번호를 찾는 중입니다 (30분마다${tried}). 찾으면 자동으로 등록됩니다.
+      <div class="actions"><button class="btn sm" data-lookup="retry">지금 다시 찾기</button></div></div>`;
+  }
+
   function renderActions(area, o, transitions, role) {
     if (!transitions.length && !(role !== 'vendor' && ['shipped', 'delivered'].includes(o.status))) {
       area.innerHTML = '';
@@ -515,17 +543,31 @@
     const box = document.getElementById('actionForm');
     const m = state.meta;
     const needsTracking = to === 'shipped' || to === '__tracking';
-    const carrierSel = `<label class="f"><span>택배사</span><select name="tracking_carrier" required>${m.carriers.map((c) => `<option ${o.tracking_carrier === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`;
+    const carrier0 = o.tracking_carrier || m.default_carrier;
+    const carrierSel = `<label class="f"><span>택배사</span><select name="tracking_carrier" required>${m.carriers.map((c) => `<option ${carrier0 === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`;
     box.innerHTML = `
       <form id="statusForm" class="card" style="margin-top:10px">
         <h3>${to === '__tracking' ? '송장 수정' : esc((state.meta.statuses.find((s) => s.code === to) || {}).name)}</h3>
-        ${needsTracking ? carrierSel + `<label class="f"><span>송장번호</span><input type="text" name="tracking_no" value="${esc(o.tracking_no)}" inputmode="numeric" required /></label>` : ''}
+        ${needsTracking ? carrierSel + `<label class="f"><span>송장번호</span><input type="text" name="tracking_no" value="${esc(o.tracking_no)}" inputmode="numeric" autocomplete="off" /><small class="muted" id="trackingHint"></small></label>` : ''}
         ${to !== '__tracking' ? `<label class="f"><span>메모 ${to === 'cancelled' || to === 'on_hold' ? '(사유)' : '(선택)'}</span><input type="text" name="note" ${to === 'cancelled' || to === 'on_hold' ? 'required' : ''} /></label>` : ''}
         ${to === 'cancelled' ? '<div class="notice">취소 후에는 되돌릴 수 없습니다.</div>' : ''}
         <div class="error" id="statusErr"></div>
         <div class="actions"><button class="btn primary" type="submit">확인</button><button class="btn" type="button" id="cancelAction">닫기</button></div>
       </form>`;
     document.getElementById('cancelAction').onclick = () => (box.innerHTML = '');
+    if (needsTracking) {
+      // 대신택배 출고는 송장을 비워 두면 서버가 대신택배에서 찾아 채운다
+      const sel = box.querySelector('[name=tracking_carrier]');
+      const input = box.querySelector('[name=tracking_no]');
+      const syncHint = () => {
+        const auto = sel.value === m.auto_lookup_carrier;
+        input.required = !(auto && to === 'shipped');
+        input.placeholder = auto ? '숫자 13자리' : '';
+        document.getElementById('trackingHint').textContent = auto && to === 'shipped' ? '비워 두면 대신택배에서 받는 분 전화번호로 자동으로 찾습니다.' : '';
+      };
+      sel.onchange = syncHint;
+      syncHint();
+    }
     document.getElementById('statusForm').onsubmit = async (e) => {
       e.preventDefault();
       const d = formData(e.target);
@@ -688,7 +730,9 @@
       <form id="sForm">
         <div class="card">
           <h3>기본 가격정책</h3>
-          ${data.settings.map((s) => `<label class="f"><span>${esc(s.label)}</span><input type="${s.key === 'company_name' ? 'text' : 'number'}" name="s.${s.key}" value="${esc(s.value)}" ${s.key === 'company_name' ? '' : 'min="0" step="any"'} required /></label>`).join('')}
+          ${data.settings.map((s) => `<label class="f"><span>${esc(s.label)}</span>${s.key === 'default_carrier'
+            ? `<select name="s.${s.key}">${state.meta.carriers.map((c) => `<option ${c === s.value ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>`
+            : `<input type="${s.key === 'company_name' ? 'text' : 'number'}" name="s.${s.key}" value="${esc(s.value)}" ${s.key === 'company_name' ? '' : 'min="0" step="any"'} required />`}</label>`).join('')}
           <div class="notice">제품금액 = max(실제 면적, 최소 주문면적) × 단가(업체별 단가 우선) + 유형별 추가금, 최종 금액 = 제품금액 + 택배비. 설정 변경은 이후 신규 주문부터 적용되며 기존 주문 금액은 바뀌지 않습니다.</div>
         </div>
         <div class="card">
