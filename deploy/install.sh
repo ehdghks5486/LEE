@@ -36,6 +36,7 @@ node -v
 
 echo "==> 3/6 앱 설치 ($APP_DIR, 브랜치 $BRANCH)"
 id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+git config --global --get-all safe.directory 2>/dev/null | grep -qx "$APP_DIR" || git config --global --add safe.directory "$APP_DIR"
 if [[ -d "$APP_DIR/.git" ]]; then
   git -C "$APP_DIR" fetch --quiet origin "$BRANCH"
   git -C "$APP_DIR" checkout --quiet "$BRANCH"
@@ -53,8 +54,8 @@ PUBLIC_IP="$(curl -fsS https://api.ipify.org || curl -fsS https://ifconfig.me ||
 DOMAIN="${DOMAIN:-${PUBLIC_IP//./-}.sslip.io}"
 mkdir -p /etc/blackout
 if [[ ! -f "$ENV_FILE" ]]; then
-  ADMIN_PW="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)"
-  FACTORY_PW="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)"
+  ADMIN_PW="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12 || true)"
+  FACTORY_PW="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12 || true)"
   cat > "$ENV_FILE" <<ENV
 # BLACKOUT 주문관리 환경변수. 수정 후: sudo systemctl restart blackout
 PORT=3000
