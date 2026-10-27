@@ -45,6 +45,10 @@ const FACTORY_FIELDS = [
 
 const VENDOR_HIDDEN = new Set(['factory_cost', 'admin_memo', 'created_by']);
 
+// 외부 연동 훅 (스마트스토어 등). beforeApprove 는 throw 로 승인을 막을 수 있고, afterShipped 는 실패해도 출고를 막지 않음.
+const hooks = { beforeApprove: null, afterShipped: null, afterCancelled: null };
+function setHooks(h) { Object.assign(hooks, h); }
+
 class HttpError extends Error {
   constructor(status, message, extra) {
     super(message);
@@ -253,8 +257,19 @@ function createOrder(db, user, body) {
   const source = user.role === 'admin' && body.source === 'smartstore' ? 'smartstore' : 'vendor';
   const external_ref = user.role === 'admin' ? requireText(body, 'external_ref', '외부 주문번호', { max: 50, required: false }) : null;
 
+  const orderId = insertOrder(db, {
+    source, external_ref, vendor_id: vendor.id, quote: q,
+    recipient_name, recipient_phone, zip_code, address, address_detail, install_note, admin_memo,
+    created_by: user.id,
+  }, user, '주문 접수 (규격·옵션 자동 검증 통과)');
+  return serializeOrder(getOrderRow(db, orderId), user.role);
+}
+
+function insertOrder(db, f, actor, note) {
+  const q = f.quote;
   let orderId;
-  const run = () => {
+  db.exec('BEGIN');
+  try {
     const order_no = nextOrderNo(db);
     const info = db
       .prepare(
@@ -264,22 +279,44 @@ function createOrder(db, user, body) {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', ?)`
       )
       .run(
-        order_no, source, external_ref, vendor.id, q.product_type, q.width_mm, q.height_mm, q.frame_color, q.fabric_color, q.quantity,
+        order_no, f.source, f.external_ref ?? null, f.vendor_id ?? null, q.product_type, q.width_mm, q.height_mm, q.frame_color, q.fabric_color, q.quantity,
         q.area_sqm, q.billed_area_sqm, q.unit_price, q.product_amount, q.surcharge, q.shipping_fee, q.total_amount, q.factory_cost,
-        recipient_name, recipient_phone, zip_code, address, address_detail, install_note, admin_memo, user.id
+        f.recipient_name, f.recipient_phone, f.zip_code ?? null, f.address, f.address_detail ?? null, f.install_note ?? null, f.admin_memo ?? null, f.created_by ?? null
       );
     orderId = Number(info.lastInsertRowid);
-    addHistory(db, orderId, user, 'created', { toStatus: 'received', note: '주문 접수 (규격·옵션 자동 검증 통과)' });
-  };
-  db.exec('BEGIN');
-  try {
-    run();
+    addHistory(db, orderId, actor, 'created', { toStatus: 'received', note });
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
-  return serializeOrder(getOrderRow(db, orderId), user.role);
+  return orderId;
+}
+
+const SYSTEM_ACTOR = { id: null, role: 'admin', name: '스마트스토어 연동', system: true };
+
+/**
+ * 스마트스토어 주문 → 내부 주문 생성.
+ * 금액은 네이버 결제 금액을 그대로 쓰고(업체 단가 미적용), 제작원가만 내부 기준으로 계산합니다.
+ */
+function createSmartstoreOrder(db, { spec, recipient, amounts, external_ref, install_note, admin_memo, actor }) {
+  const result = quoteFor(db, spec, null);
+  if (!result.ok) throw new HttpError(400, result.errors.join(' '), { errors: result.errors });
+  const q = { ...result.quote };
+  const productAmount = Math.round(Number(amounts.product_amount) || 0);
+  const shippingFee = Math.round(Number(amounts.shipping_fee) || 0);
+  q.product_amount = productAmount;
+  q.surcharge = 0;
+  q.shipping_fee = shippingFee;
+  q.total_amount = productAmount + shippingFee;
+  q.unit_price = q.billed_area_sqm * q.quantity > 0 ? Math.round(productAmount / (q.billed_area_sqm * q.quantity)) : 0;
+  const orderId = insertOrder(db, {
+    source: 'smartstore', external_ref, vendor_id: null, quote: q,
+    recipient_name: recipient.name, recipient_phone: recipient.phone, zip_code: recipient.zip_code ?? null,
+    address: recipient.address, address_detail: recipient.address_detail ?? null, install_note: install_note ?? null,
+    admin_memo: admin_memo ?? null, created_by: actor && actor.id ? actor.id : null,
+  }, actor || SYSTEM_ACTOR, `스마트스토어 주문 수집 (상품주문번호 ${external_ref})`);
+  return getOrderRow(db, orderId);
 }
 
 const SPEC_FIELDS = ['product_type', 'width_mm', 'height_mm', 'frame_color', 'fabric_color', 'quantity'];
@@ -391,16 +428,31 @@ function changeStatus(db, user, id, body) {
   }
   const note = body.note ? String(body.note).slice(0, 500) : null;
 
+  // 외부 연동: 승인 전 발주확인 (실패 시 승인 중단)
+  let hookNote = null;
+  if (to === 'approved' && hooks.beforeApprove) hookNote = hooks.beforeApprove(order, user);
+
   db.exec('BEGIN');
   try {
     db.prepare(`UPDATE orders SET ${sets.join(', ')} WHERE id = ?`).run(...params, id);
-    addHistory(db, id, user, 'status', { fromStatus: order.status, toStatus: to, note, details: tracking });
+    addHistory(db, id, user, 'status', { fromStatus: order.status, toStatus: to, note: [note, hookNote].filter(Boolean).join(' · ') || null, details: tracking });
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
-  return serializeOrder(getOrderRow(db, id), user.role);
+  const updated = getOrderRow(db, id);
+  if (to === 'shipped' && hooks.afterShipped) hooks.afterShipped(updated, user);
+  if (to === 'cancelled' && hooks.afterCancelled) hooks.afterCancelled(updated, user);
+  return serializeOrder(updated, user.role);
+}
+
+/** 시스템(연동)에 의한 상태 변경·메모. 관리자 전환 규칙을 따름. */
+function systemChangeStatus(db, id, to, note) {
+  return changeStatus(db, SYSTEM_ACTOR, id, { status: to, note });
+}
+function systemNote(db, id, note, details) {
+  addHistory(db, id, SYSTEM_ACTOR, 'note', { note, details });
 }
 
 function updateTracking(db, user, id, body) {
@@ -479,14 +531,22 @@ function stats(db, { from, to } = {}) {
        GROUP BY o.vendor_id ORDER BY revenue DESC`
     )
     .all(...params);
+  const bySource = db
+    .prepare(
+      `SELECT o.source, COUNT(*) AS orders, SUM(product_amount + surcharge) AS revenue, SUM(factory_cost) AS factory_cost,
+              SUM(product_amount + surcharge - factory_cost) AS margin
+       FROM orders o ${w} GROUP BY o.source ORDER BY o.source`
+    )
+    .all(...params);
   const byStatus = db.prepare('SELECT status, COUNT(*) AS n FROM orders GROUP BY status').all();
   const statusCounts = {};
   for (const s of Object.keys(STATUSES)) statusCounts[s] = 0;
   for (const r of byStatus) statusCounts[r.status] = r.n;
-  return { totals, by_month: byMonth, by_vendor: byVendor, status_counts: statusCounts };
+  return { totals, by_month: byMonth, by_vendor: byVendor, by_source: bySource, status_counts: statusCounts };
 }
 
 module.exports = {
   STATUSES, TRANSITIONS, HttpError, listOrders, createOrder, updateOrder, changeStatus, updateTracking, getOrder, stats,
-  quoteFor, resolveVendorForOrder, serializeOrder,
+  quoteFor, resolveVendorForOrder, serializeOrder, setHooks, createSmartstoreOrder, systemChangeStatus, systemNote, getOrderRow,
+  SYSTEM_ACTOR,
 };

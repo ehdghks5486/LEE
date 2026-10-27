@@ -26,10 +26,11 @@ button, input, select, textarea { font: inherit; }
   padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
-.topbar .row { flex-wrap: nowrap; gap: 6px; }
+.topbar .row { flex-wrap: nowrap; gap: 6px; min-width: 0; flex-shrink: 1; }
+@media (max-width: 420px) { .topbar .who .role { display: none; } .topbar .logo small { display: none; } }
 .topbar .logo { font-weight: 800; letter-spacing: .12em; font-size: 15px; }
 .topbar .logo small { display: block; font-weight: 500; letter-spacing: 0; font-size: 11px; opacity: .7; }
-.topbar .who { font-size: 12px; opacity: .85; text-align: right; max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar .who { font-size: 12px; opacity: .85; text-align: right; flex: 1; min-width: 0; max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .who .role { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: rgba(255,255,255,.15); font-size: 11px; }
 .topbar button { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.35); border-radius: 8px; padding: 5px 8px; font-size: 12px; white-space: nowrap; }
 .nav { display: flex; gap: 4px; padding: 8px 12px 0; background: var(--surface); border-bottom: 1px solid var(--line); overflow-x: auto; position: sticky; top: 0; z-index: 19; }

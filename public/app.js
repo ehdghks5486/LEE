@@ -85,7 +85,7 @@
   // ---------- render ----------
   const NAV = {
     vendor: [['/orders', '내 주문'], ['/orders/new', '새 주문']],
-    admin: [['/orders', '주문관리'], ['/stats', '매출·마진'], ['/vendors', '업체관리'], ['/users', '계정관리'], ['/settings', '가격설정']],
+    admin: [['/orders', '주문관리'], ['/smartstore', '스마트스토어'], ['/stats', '매출·마진'], ['/vendors', '업체관리'], ['/users', '계정관리'], ['/settings', '가격설정']],
     factory: [['/orders', '제작 주문서']],
   };
 
@@ -118,6 +118,7 @@
     if (role === 'admin' && p[0] === 'vendors') return viewVendors(main);
     if (role === 'admin' && p[0] === 'users') return viewUsers(main);
     if (role === 'admin' && p[0] === 'settings') return viewSettings(main);
+    if (role === 'admin' && p[0] === 'smartstore') return viewSmartstore(main, r);
     return viewOrders(main, r);
   }
 
@@ -335,7 +336,7 @@
     let data;
     try { data = await api('GET', `/api/orders/${id}`); }
     catch (err) { main.innerHTML = `<div class="error">${esc(err.message)}</div><a class="btn" href="#/orders">목록으로</a>`; return; }
-    const { order: o, history, allowed_transitions } = data;
+    const { order: o, history, allowed_transitions, smartstore: ssInfo } = data;
     const role = state.user.role;
     const m = state.meta;
     const canEdit = role === 'admin' ? ['received', 'on_hold', 'approved'].includes(o.status) : role === 'vendor' ? ['received', 'on_hold'].includes(o.status) : false;
@@ -396,6 +397,18 @@
         <div id="actionArea"></div>
       </div>
 
+      ${role === 'admin' && ssInfo ? `<div class="card no-print"><h3>스마트스토어 연동</h3>
+        <dl class="kv small">
+          <dt>상품주문번호</dt><dd>${esc(ssInfo.product_order_id)} <span class="muted">(주문번호 ${esc(ssInfo.naver_order_id || '-')})</span></dd>
+          <dt>주문자</dt><dd>${esc(ssInfo.orderer_name || '-')}</dd>
+          <dt>구매 옵션</dt><dd>${esc(ssInfo.product_option || '-')}</dd>
+          <dt>배송 메모</dt><dd>${esc(ssInfo.shipping_memo || '-')}</dd>
+          <dt>네이버 상태</dt><dd>${esc(ssInfo.naver_status || '-')}${ssInfo.claim_status ? ` · <span class="chip on_hold">${esc(ssInfo.claim_status)}</span>` : ''}</dd>
+          <dt>발주확인</dt><dd>${ssInfo.confirmed_at ? `전송됨 (${dt(ssInfo.confirmed_at)})` : '<span class="muted">미전송 (승인 시 자동)</span>'}</dd>
+          <dt>발송처리</dt><dd>${ssInfo.dispatch_synced ? '전송됨' : ssInfo.dispatch_error ? `<span class="error">실패: ${esc(ssInfo.dispatch_error)}</span>` : '<span class="muted">출고 시 자동</span>'}</dd>
+        </dl>
+        ${ssInfo.dispatch_error && !ssInfo.dispatch_synced ? `<div class="actions"><button class="btn sm" id="dispatchRetry">발송처리 재전송</button></div>` : ''}
+      </div>` : ''}
       ${role === 'admin' ? `<div class="card no-print"><h3>관리자 메모 (공장·업체 비노출)</h3>
         <form id="memoForm"><textarea name="admin_memo">${esc(o.admin_memo)}</textarea><div class="actions"><button class="btn sm" type="submit">메모 저장</button></div></form></div>` : ''}
 
@@ -414,6 +427,12 @@
     if (role === 'factory') document.getElementById('printBtn').onclick = () => window.print();
     renderActions(document.getElementById('actionArea'), o, allowed_transitions, role);
 
+    if (role === 'admin' && document.getElementById('dispatchRetry')) {
+      document.getElementById('dispatchRetry').onclick = async () => {
+        try { await api('POST', `/api/smartstore/orders/${ssInfo.product_order_id}/dispatch-retry`, {}); toast('발송처리를 전송했습니다.'); render(); }
+        catch (err) { toast(err.message, true); }
+      };
+    }
     if (role === 'admin') {
       document.getElementById('memoForm').onsubmit = async (e) => {
         e.preventDefault();
@@ -454,7 +473,7 @@
   }
 
   function historyItem(h) {
-    const label = { created: '주문 접수', updated: '주문 내용 수정', status: `${h.from_status_name || ''} → ${h.to_status_name || ''}`, tracking: '송장 정보 수정' }[h.event] || h.event;
+    const label = { created: '주문 접수', updated: '주문 내용 수정', status: `${h.from_status_name || ''} → ${h.to_status_name || ''}`, tracking: '송장 정보 수정', note: '연동 알림' }[h.event] || h.event;
     const details = h.details ? Object.entries(h.details).map(([k, v]) => {
       const name = FIELD_NAMES[k] || k;
       if (v && typeof v === 'object' && 'from' in v) return `${name}: ${fmtVal(k, v.from)} → ${fmtVal(k, v.to)}`;
@@ -553,6 +572,9 @@
         <div class="tiles">
           ${['received', 'on_hold', 'approved', 'in_production', 'shipped'].map((k) => `<a class="tile" href="#/orders?status=${k}"><div class="k">${esc(nameOf(state.meta.statuses, k))}</div><div class="v">${num(sc[k])}건</div></a>`).join('')}
         </div>
+        ${s.by_source && s.by_source.length > 1 ? `<h2>주문 경로별</h2>
+        <div class="table-wrap"><table><thead><tr><th>경로</th><th class="num">건수</th><th class="num">매출</th><th class="num">제작원가</th><th class="num">마진</th></tr></thead>
+        <tbody>${s.by_source.map((x) => `<tr><td>${x.source === 'smartstore' ? '스마트스토어' : '업체 주문'}</td><td class="num">${num(x.orders)}</td><td class="num">${won(x.revenue)}</td><td class="num">${won(x.factory_cost)}</td><td class="num">${won(x.margin)}</td></tr>`).join('')}</tbody></table></div>` : ''}
         <h2>월별</h2>
         <div class="table-wrap"><table><thead><tr><th>월</th><th class="num">건수</th><th class="num">매출</th><th class="num">제작원가</th><th class="num">마진</th><th class="num">마진율</th></tr></thead>
         <tbody>${s.by_month.map((m) => `<tr><td>${esc(m.month)}</td><td class="num">${num(m.orders)}</td><td class="num">${won(m.revenue)}</td><td class="num">${won(m.factory_cost)}</td><td class="num">${won(m.margin)}</td><td class="num">${m.revenue ? Math.round((m.margin / m.revenue) * 100) : 0}%</td></tr>`).join('') || '<tr><td colspan="6" class="muted">데이터 없음</td></tr>'}</tbody></table></div>
@@ -700,6 +722,123 @@
       <td><input type="number" name="factory_surcharge" value="${t.factory_surcharge}" min="0" step="1000" style="width:120px" /></td>
       <td><input type="number" name="sort_order" value="${t.sort_order}" style="width:70px" /></td>
       <td><input type="checkbox" name="active" ${t.active ? 'checked' : ''} /></td></tr>`;
+  }
+
+  // ---------- admin: smartstore ----------
+  const SS_TABS = [['needs_review', '확인 필요'], ['cancel', '취소 요청'], ['errors', '발송 오류'], ['imported', '등록됨'], ['', '전체']];
+  async function viewSmartstore(main, r) {
+    const filter = r.query.filter ?? 'needs_review';
+    const m = state.meta;
+    const mode = m.smartstore?.mode || 'off';
+    main.innerHTML = `
+      <h1>네이버 스마트스토어 연동</h1>
+      <div id="ssStatus" class="card"><div class="muted">불러오는 중…</div></div>
+      <div class="tabs">${SS_TABS.map(([f, l]) => `<button data-filter="${f}" class="${f === filter ? 'active' : ''}">${l}</button>`).join('')}</div>
+      <div id="ssList"><div class="empty">불러오는 중…</div></div>
+      <h2>동기화 기록</h2>
+      <div id="ssLog"></div>`;
+    main.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => go(`/smartstore?filter=${b.dataset.filter}`)));
+
+    const renderStatus = (st) => {
+      const c = st.counts;
+      document.getElementById('ssStatus').innerHTML = `
+        <div class="row between">
+          <div>
+            <div class="title">${mode === 'live' ? '실서버 연동 중' : mode === 'mock' ? '모의(mock) 모드' : '연동 미설정'}</div>
+            <div class="small muted">${mode === 'off'
+              ? '서버 환경변수 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 을 설정하면 자동으로 연동됩니다. 시험용은 SMARTSTORE_MODE=mock.'
+              : `${st.poll_minutes}분 간격 자동 수집${st.polling ? '' : ' (대기 중)'} · 마지막 수집 ${st.last_pull_at ? dt(st.last_pull_at.replace('T', ' ')) + (st.last_pull_ok ? ' 성공' : ' <span class="error">실패</span>') : '없음'}`}</div>
+          </div>
+          <div class="row">
+            ${mode === 'mock' ? '<button class="btn sm" id="mockAdd">모의 주문 생성</button>' : ''}
+            <button class="btn primary sm" id="syncNow" ${mode === 'off' ? 'disabled' : ''}>지금 동기화</button>
+          </div>
+        </div>
+        <div class="tiles" style="margin-top:12px">
+          <a class="tile" href="#/smartstore?filter=needs_review"><div class="k">확인 필요</div><div class="v">${num(c.needs_review)}</div></a>
+          <a class="tile" href="#/smartstore?filter=cancel"><div class="k">취소 요청</div><div class="v">${num(c.cancel_requests)}</div></a>
+          <a class="tile" href="#/smartstore?filter=errors"><div class="k">발송 오류</div><div class="v">${num(c.dispatch_errors)}</div></a>
+          <a class="tile" href="#/smartstore?filter=imported"><div class="k">등록됨</div><div class="v">${num(c.imported)}</div></a>
+        </div>`;
+      const syncBtn = document.getElementById('syncNow');
+      if (syncBtn) syncBtn.onclick = async () => {
+        busy(syncBtn, true);
+        try { const res = await api('POST', '/api/smartstore/sync', {}); toast(`수집 ${res.summary.paid.new}건 (자동 등록 ${res.summary.paid.imported}, 확인 필요 ${res.summary.paid.review})`); render(); }
+        catch (err) { toast(err.message, true); busy(syncBtn, false); }
+      };
+      const mockBtn = document.getElementById('mockAdd');
+      if (mockBtn) mockBtn.onclick = async () => {
+        try { await api('POST', '/api/smartstore/mock/order', {}); toast('모의 주문을 만들었습니다. "지금 동기화"를 눌러 수집하세요.'); }
+        catch (err) { toast(err.message, true); }
+      };
+    };
+
+    try {
+      const [{ status: st, logs }, { rows }] = await Promise.all([api('GET', '/api/smartstore/status'), api('GET', `/api/smartstore/orders?filter=${filter}`)]);
+      renderStatus(st);
+      document.getElementById('ssList').innerHTML = rows.map((row) => ssRow(row, m)).join('') || '<div class="empty">해당 건이 없습니다.</div>';
+      document.getElementById('ssLog').innerHTML = logs.length ? `<div class="table-wrap"><table><thead><tr><th>시각</th><th>구분</th><th>결과</th><th>내용</th></tr></thead><tbody>${logs.map((l) => `<tr><td>${dt(l.ran_at)}</td><td>${esc(l.kind)}</td><td>${l.ok ? '성공' : '<span class="error">실패</span>'}</td><td style="white-space:normal">${esc(l.message)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="muted small">기록 없음</div>';
+      bindSsRows(rows, m);
+    } catch (err) { document.getElementById('ssList').innerHTML = `<div class="error">${esc(err.message)}</div>`; }
+  }
+
+  function ssRow(row, m) {
+    const spec = row.parsed_spec || {};
+    const specText = [spec.product_type ? nameOf(m.product_types, spec.product_type) : null, spec.width_mm && spec.height_mm ? `${num(spec.width_mm)} × ${num(spec.height_mm)} mm` : null,
+      spec.frame_color ? `프레임 ${nameOf(m.frame_colors, spec.frame_color)}` : null, spec.fabric_color ? `원단 ${nameOf(m.fabric_colors, spec.fabric_color)}` : null].filter(Boolean).join(' · ');
+    const badge = row.import_status === 'imported' ? `<span class="chip ${row.order_status}">${esc(nameOf(m.statuses, row.order_status))}</span>` : row.import_status === 'ignored' ? '<span class="chip">무시됨</span>' : '<span class="chip on_hold">확인 필요</span>';
+    const addr = row.shipping_address || {};
+    return `
+      <div class="card" data-pid="${esc(row.product_order_id)}">
+        <div class="row between">
+          <span class="title">${row.order_no ? `<a href="#/orders/${row.order_id}">${esc(row.order_no)}</a> · ` : ''}${esc(row.product_order_id)}</span>
+          <span>${badge}${row.claim_status === 'CANCEL_REQUEST' ? ' <span class="chip cancelled">취소 요청</span>' : ''}${row.dispatch_error && !row.dispatch_synced ? ' <span class="chip cancelled">발송 오류</span>' : ''}</span>
+        </div>
+        <div class="small muted">${esc(row.product_name || '')} · ${esc(row.orderer_name || '')} · ${won(row.payment_amount)}${row.delivery_fee ? ` + 배송비 ${won(row.delivery_fee)}` : ''} · ${dt(row.paid_at ? row.paid_at.replace('T', ' ') : row.created_at)}</div>
+        <div class="small" style="margin-top:6px"><strong>옵션</strong> ${esc(row.product_option || '-')}</div>
+        ${row.shipping_memo ? `<div class="small"><strong>배송메모</strong> ${esc(row.shipping_memo)}</div>` : ''}
+        <div class="small"><strong>변환 규격</strong> ${specText || '<span class="muted">없음</span>'}${row.parse_missing.length ? ` <span class="error">누락: ${esc(row.parse_missing.join(', '))}</span>` : ''}</div>
+        <div class="small muted">배송지: ${esc(addr.name || '')} ${esc(addr.tel1 || '')} ${esc(addr.baseAddress || '')} ${esc(addr.detailedAddress || '')}</div>
+        ${row.dispatch_error && !row.dispatch_synced ? `<div class="error">발송처리 실패: ${esc(row.dispatch_error)}</div>` : ''}
+        <div class="actions">
+          ${row.import_status === 'needs_review' ? `<button class="btn primary sm" data-act="complete">규격 확인 후 등록</button><button class="btn sm" data-act="ignore">무시</button>` : ''}
+          ${row.claim_status === 'CANCEL_REQUEST' ? `<button class="btn danger sm" data-act="cancel">네이버 취소 승인 + 주문 취소</button>` : ''}
+          ${row.dispatch_error && !row.dispatch_synced && row.order_id ? `<button class="btn sm" data-act="retry">발송처리 재전송</button>` : ''}
+        </div>
+        <div class="ss-form"></div>
+      </div>`;
+  }
+
+  function bindSsRows(rows, m) {
+    document.querySelectorAll('[data-pid]').forEach((card) => {
+      const pid = card.dataset.pid;
+      const row = rows.find((r) => r.product_order_id === pid);
+      card.querySelectorAll('button[data-act]').forEach((b) => (b.onclick = async () => {
+        const act = b.dataset.act;
+        try {
+          if (act === 'ignore') { if (!confirm('이 상품주문을 수집 목록에서 무시할까요?')) return; await api('POST', `/api/smartstore/orders/${pid}/ignore`, {}); toast('무시 처리했습니다.'); render(); }
+          else if (act === 'cancel') { if (!confirm('네이버에 취소 승인을 전송하고 내부 주문을 취소합니다. 진행할까요?')) return; await api('POST', `/api/smartstore/orders/${pid}/cancel-approve`, {}); toast('취소 승인했습니다.'); render(); }
+          else if (act === 'retry') { await api('POST', `/api/smartstore/orders/${pid}/dispatch-retry`, {}); toast('발송처리를 전송했습니다.'); render(); }
+          else if (act === 'complete') {
+            const box = card.querySelector('.ss-form');
+            if (box.innerHTML) { box.innerHTML = ''; return; }
+            const spec = row.parsed_spec || {};
+            box.innerHTML = `<form class="card" style="margin-top:10px;background:#f8f9fb">
+              <div class="notice">옵션에서 읽지 못한 항목을 채우고 등록하면 주문이 "접수" 상태로 생성됩니다. 고객에게 치수를 확인한 뒤 진행하세요.</div>
+              ${specFields(m, { product_type: spec.product_type, width_mm: spec.width_mm, height_mm: spec.height_mm, frame_color: spec.frame_color, fabric_color: spec.fabric_color, quantity: row.quantity })}
+              <div class="error"></div>
+              <div class="actions"><button class="btn primary" type="submit">주문 등록</button></div></form>`;
+            const form = box.querySelector('form');
+            form.querySelector('input[name=quantity]').readOnly = true;
+            form.onsubmit = async (e) => {
+              e.preventDefault();
+              try { const res = await api('POST', `/api/smartstore/orders/${pid}/import`, formData(form)); toast(`주문 ${res.order.order_no} 등록`); go(`/orders/${res.order.id}`); }
+              catch (err) { form.querySelector('.error').textContent = err.message; }
+            };
+          }
+        } catch (err) { toast(err.message, true); }
+      }));
+    });
   }
 
   boot();

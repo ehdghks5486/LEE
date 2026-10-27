@@ -8,6 +8,9 @@ const { hashPassword, verifyPassword } = require('./password');
 const auth = require('./auth');
 const orders = require('./orders');
 const { FRAME_COLORS, FABRIC_COLORS } = require('./pricing');
+const { createSync } = require('./smartstore/sync');
+const { MockNaverClient } = require('./smartstore/mock');
+const { NaverCommerceClient } = require('./smartstore/client');
 
 const { HttpError, STATUSES } = orders;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -101,10 +104,27 @@ function createRouter() {
   return { add, match };
 }
 
-function createApp({ dbPath, secureCookies = false } = {}) {
+function resolveSmartstore(opt = {}) {
+  if (opt.client) return { mode: opt.mode || opt.client.mode || 'mock', client: opt.client };
+  const mode = opt.mode || process.env.SMARTSTORE_MODE || (process.env.NAVER_CLIENT_ID && process.env.NAVER_CLIENT_SECRET ? 'live' : 'off');
+  if (mode === 'live') {
+    return { mode, client: new NaverCommerceClient({ clientId: process.env.NAVER_CLIENT_ID, clientSecret: process.env.NAVER_CLIENT_SECRET }) };
+  }
+  if (mode === 'mock') return { mode, client: new MockNaverClient() };
+  return { mode: 'off', client: null };
+}
+
+function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart = false } = {}) {
   const db = openDatabase(dbPath || process.env.DB_PATH || path.join(__dirname, '..', 'data', 'blackout.db'));
   auth.purgeExpired(db);
   const router = createRouter();
+
+  const ss = resolveSmartstore(smartstore);
+  const sync = createSync({ db, client: ss.client, mode: ss.mode, pollMinutes: Number(smartstore.pollMinutes || process.env.SMARTSTORE_POLL_MINUTES) || 5 });
+  orders.setHooks({
+    afterShipped: (order) => { sync.dispatchOrder(order).catch(() => {}); },
+  });
+  if (autoStart) sync.start();
 
   // ----- auth -----
   router.add('POST', '/api/auth/login', async (ctx) => {
@@ -176,6 +196,7 @@ function createApp({ dbPath, secureCookies = false } = {}) {
     }
     if (ctx.user.role === 'admin') {
       meta.vendors = db.prepare('SELECT id, name, unit_price_per_sqm, active FROM vendors ORDER BY active DESC, name').all();
+      meta.smartstore = { mode: ss.mode, enabled: sync.enabled() };
     }
     json(ctx.res, 200, meta);
   });
@@ -200,7 +221,18 @@ function createApp({ dbPath, secureCookies = false } = {}) {
   });
   router.add('GET', '/api/orders/:id', async (ctx) => {
     requireRole(ctx.user);
-    json(ctx.res, 200, orders.getOrder(db, ctx.user, Number(ctx.params.id)));
+    const data = orders.getOrder(db, ctx.user, Number(ctx.params.id));
+    if (ctx.user.role === 'admin' && data.order.source === 'smartstore') {
+      const row = sync.getRowByOrder(data.order.id);
+      if (row) {
+        data.smartstore = {
+          product_order_id: row.product_order_id, naver_order_id: row.naver_order_id, naver_status: row.naver_status, claim_status: row.claim_status,
+          confirmed_at: row.confirmed_at, dispatch_synced: !!row.dispatch_synced, dispatch_error: row.dispatch_error, orderer_name: row.orderer_name,
+          product_option: row.product_option, shipping_memo: row.shipping_memo,
+        };
+      }
+    }
+    json(ctx.res, 200, data);
   });
   router.add('PATCH', '/api/orders/:id', async (ctx) => {
     requireRole(ctx.user, 'vendor', 'admin');
@@ -208,7 +240,69 @@ function createApp({ dbPath, secureCookies = false } = {}) {
   });
   router.add('POST', '/api/orders/:id/status', async (ctx) => {
     requireRole(ctx.user);
-    json(ctx.res, 200, { order: orders.changeStatus(db, ctx.user, Number(ctx.params.id), ctx.body) });
+    const id = Number(ctx.params.id);
+    const body = { ...ctx.body };
+    if (body.status === 'approved' && ctx.user.role === 'admin') {
+      // 스마트스토어 주문은 승인 전에 네이버 발주확인을 먼저 전송 (실패하면 승인하지 않음)
+      const current = orders.getOrderRow(db, id);
+      if (current && current.status !== 'approved') {
+        const hookNote = await sync.confirmOrder(current);
+        if (hookNote) body.note = [body.note, hookNote].filter(Boolean).join(' · ');
+      }
+    }
+    json(ctx.res, 200, { order: orders.changeStatus(db, ctx.user, id, body) });
+  });
+
+  // ----- admin: smartstore -----
+  router.add('GET', '/api/smartstore/status', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    json(ctx.res, 200, { status: sync.status(), logs: sync.logs() });
+  });
+  router.add('POST', '/api/smartstore/sync', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    const summary = await sync.pull({ reason: 'manual' });
+    json(ctx.res, 200, { summary, status: sync.status() });
+  });
+  router.add('GET', '/api/smartstore/orders', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    json(ctx.res, 200, { rows: sync.listRows({ filter: ctx.query.filter }) });
+  });
+  router.add('POST', '/api/smartstore/orders/:pid/import', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    const spec = {};
+    for (const k of ['product_type', 'width_mm', 'height_mm', 'frame_color', 'fabric_color']) if (ctx.body[k] !== undefined && ctx.body[k] !== '') spec[k] = ctx.body[k];
+    const order = sync.tryImport(ctx.params.pid, spec, ctx.user);
+    json(ctx.res, 201, { order: orders.serializeOrder(order, 'admin') });
+  });
+  router.add('POST', '/api/smartstore/orders/:pid/ignore', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    json(ctx.res, 200, { row: sync.ignore(ctx.params.pid) });
+  });
+  router.add('POST', '/api/smartstore/orders/:pid/cancel-approve', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    json(ctx.res, 200, { row: await sync.approveCancel(ctx.params.pid, ctx.user) });
+  });
+  router.add('POST', '/api/smartstore/orders/:pid/dispatch-retry', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    const row = sync.getRow(ctx.params.pid);
+    if (!row || !row.order_id) throw new HttpError(404, '연결된 주문이 없습니다.');
+    const order = orders.getOrderRow(db, row.order_id);
+    if (!order.tracking_no) throw new HttpError(409, '송장이 등록되지 않은 주문입니다.');
+    await sync.dispatchOrder(order);
+    json(ctx.res, 200, { row: sync.getRow(ctx.params.pid) });
+  });
+  // 모의 모드 전용: 가짜 스마트스토어 주문/취소요청 생성
+  router.add('POST', '/api/smartstore/mock/order', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    if (ss.mode !== 'mock') throw new HttpError(400, '모의 모드에서만 사용할 수 있습니다.');
+    const pid = ss.client.addSampleOrder(ctx.body || {});
+    json(ctx.res, 201, { product_order_id: pid });
+  });
+  router.add('POST', '/api/smartstore/mock/cancel/:pid', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    if (ss.mode !== 'mock') throw new HttpError(400, '모의 모드에서만 사용할 수 있습니다.');
+    ss.client.requestCancel(ctx.params.pid);
+    json(ctx.res, 200, { ok: true });
   });
   router.add('POST', '/api/orders/:id/tracking', async (ctx) => {
     requireRole(ctx.user, 'factory', 'admin');
@@ -402,6 +496,10 @@ function createApp({ dbPath, secureCookies = false } = {}) {
     });
   });
   server.db = db;
+  server.sync = sync;
+  server.naverClient = ss.client;
+  const origClose = server.close.bind(server);
+  server.close = (cb) => { sync.stop(); return origClose(cb); };
   return server;
 }
 
@@ -468,8 +566,10 @@ module.exports = { createApp };
 if (require.main === module) {
   const port = Number(process.env.PORT) || 3000;
   const host = process.env.HOST || '0.0.0.0';
-  const server = createApp({ secureCookies: process.env.SECURE_COOKIES === '1' });
+  const server = createApp({ secureCookies: process.env.SECURE_COOKIES === '1', autoStart: true });
   server.listen(port, host, () => {
     console.log(`BLACKOUT 주문관리 서버 실행 중: http://localhost:${port}`);
+    const st = server.sync.status();
+    console.log(`스마트스토어 연동: ${st.mode === 'off' ? '미설정 (NAVER_CLIENT_ID/SECRET 또는 SMARTSTORE_MODE=mock)' : st.mode + ' 모드, ' + st.poll_minutes + '분 간격 수집'}`);
   });
 }

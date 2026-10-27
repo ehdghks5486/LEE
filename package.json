@@ -12,5 +12,8 @@
     "dev": "node --no-warnings=ExperimentalWarning --watch server/index.js",
     "test": "node --no-warnings=ExperimentalWarning --test \"test/**/*.test.js\""
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "dependencies": {
+    "bcryptjs": "^3.0.3"
+  }
 }

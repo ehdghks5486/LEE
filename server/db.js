@@ -111,6 +111,48 @@ CREATE TABLE IF NOT EXISTS order_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_history_order ON order_history(order_id);
+
+-- 네이버 스마트스토어 연동
+CREATE TABLE IF NOT EXISTS smartstore_orders (
+  product_order_id TEXT PRIMARY KEY,
+  naver_order_id TEXT,
+  order_id INTEGER REFERENCES orders(id),
+  import_status TEXT NOT NULL DEFAULT 'needs_review',   -- imported | needs_review | ignored
+  naver_status TEXT,
+  claim_status TEXT,
+  place_order_status TEXT,
+  confirmed_at TEXT,
+  dispatch_synced INTEGER NOT NULL DEFAULT 0,
+  dispatch_error TEXT,
+  cancel_requested_at TEXT,
+  product_name TEXT,
+  product_option TEXT,
+  shipping_memo TEXT,
+  parsed_spec TEXT,
+  parse_missing TEXT,
+  orderer_name TEXT,
+  payment_amount INTEGER,
+  delivery_fee INTEGER,
+  quantity INTEGER,
+  paid_at TEXT,
+  raw TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS smartstore_sync_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ran_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  kind TEXT NOT NULL,
+  ok INTEGER NOT NULL,
+  message TEXT,
+  details TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 `;
 
 const DEFAULT_SETTINGS = [
