@@ -125,8 +125,8 @@ const DEFAULT_SETTINGS = [
 
 const DEFAULT_PRODUCT_TYPES = [
   ['single', '편개형', 0, 0, 1],
-  ['double', '양개형', 20000, 10000, 2],
-  ['free', '프리형', 30000, 15000, 3],
+  ['double', '양개형', 50000, 10000, 2],
+  ['free', '프리형', 50000, 15000, 3],
 ];
 
 function openDatabase(dbPath) {
