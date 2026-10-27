@@ -144,6 +144,24 @@ test('취소 요청: 제작 전이면 보류, 취소 승인 시 내부 주문 �
   assert.equal(o2.data.order.status, 'cancelled');
 });
 
+test('클레임 완료: 취소면 내부 주문 취소, 반품 클레임은 무시', async () => {
+  const admin = client();
+  await admin('POST', '/api/auth/login', { username: 'admin', password: 'admin1234' });
+  const pidCancel = mock.addSampleOrder({ option: '편개형 / 화이트 프레임 / 화이트 원단 / 가로 1000 / 세로 2000', productAmount: 200000 });
+  const pidReturn = mock.addSampleOrder({ option: '편개형 / 화이트 프레임 / 화이트 원단 / 가로 1100 / 세로 2000', productAmount: 200000 });
+  await admin('POST', '/api/smartstore/sync', {});
+  const rows = (await admin('GET', '/api/smartstore/orders')).data.rows;
+  const rowCancel = rows.find((r) => r.product_order_id === pidCancel);
+  const rowReturn = rows.find((r) => r.product_order_id === pidReturn);
+
+  mock.completeClaim(pidCancel, 'CANCEL');
+  mock.completeClaim(pidReturn, 'RETURN');
+  const s = await admin('POST', '/api/smartstore/sync', {});
+  assert.equal(s.data.summary.cancels.cancelled, 1);
+  assert.equal((await admin('GET', `/api/orders/${rowCancel.order_id}`)).data.order.status, 'cancelled');
+  assert.notEqual((await admin('GET', `/api/orders/${rowReturn.order_id}`)).data.order.status, 'cancelled');
+});
+
 test('연동 미설정 서버에서는 수집 API가 안내 오류를 반환', async () => {
   const s2 = createApp({ dbPath: ':memory:', smartstore: { mode: 'off' } });
   await new Promise((r) => s2.listen(0, '127.0.0.1', r));

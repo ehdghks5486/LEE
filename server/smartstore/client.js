@@ -93,7 +93,7 @@ class NaverCommerceClient {
     return data;
   }
 
-  /** 변경 상품주문 조회. type: PAYED | CANCEL_REQUEST | CANCELED | ... 결과: 배열 (페이지 자동 병합) */
+  /** 변경 상품주문 조회. type: PAYED | CLAIM_REQUESTED | CLAIM_COMPLETED | ... (항목의 claimType 으로 취소/반품 구분) 결과: 배열 (페이지 자동 병합) */
   async getLastChanged({ from, type }) {
     const out = [];
     let moreSequence;

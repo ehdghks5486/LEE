@@ -62,7 +62,17 @@ class MockNaverClient {
     if (!e) throw new Error('not found');
     e.productOrder.claimType = 'CANCEL';
     e.productOrder.claimStatus = 'CANCEL_REQUEST';
-    e.changes.push({ type: 'CANCEL_REQUEST', at: new Date().toISOString() });
+    e.changes.push({ type: 'CLAIM_REQUESTED', at: new Date().toISOString() });
+  }
+
+  /** 구매자 취소가 바로 완료되는 경우(발주확인 전) 또는 반품 등 다른 클레임 */
+  completeClaim(productOrderId, claimType = 'CANCEL') {
+    const e = this.orders.get(productOrderId);
+    if (!e) throw new Error('not found');
+    e.productOrder.claimType = claimType;
+    e.productOrder.claimStatus = claimType === 'CANCEL' ? 'CANCEL_DONE' : `${claimType}_DONE`;
+    if (claimType === 'CANCEL') e.productOrder.productOrderStatus = 'CANCELED';
+    e.changes.push({ type: 'CLAIM_COMPLETED', at: new Date().toISOString() });
   }
 
   async getLastChanged({ from, type }) {
@@ -75,6 +85,8 @@ class MockNaverClient {
             productOrderId: e.productOrder.productOrderId,
             orderId: e.order.orderId,
             productOrderStatus: e.productOrder.productOrderStatus,
+            claimType: e.productOrder.claimType,
+            claimStatus: e.productOrder.claimStatus,
             lastChangedType: c.type,
             lastChangedDate: c.at,
             paymentDate: e.order.paymentDate,

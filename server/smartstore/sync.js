@@ -161,9 +161,11 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console }) {
 
   async function pullCancels() {
     const results = { requests: 0, held: 0, cancelled: 0 };
-    for (const type of ['CANCEL_REQUEST', 'CANCELED']) {
-      const { list, cursor } = await fetchChanges(type, `cursor_${type.toLowerCase()}`);
+    // 네이버 lastChangedType 에는 취소 전용 값이 없다: 클레임 요청/완료로 받고 claimType 으로 취소만 고른다.
+    for (const [type, naverType] of [['CANCEL_REQUEST', 'CLAIM_REQUESTED'], ['CANCELED', 'CLAIM_COMPLETED']]) {
+      const { list, cursor } = await fetchChanges(naverType, `cursor_${type.toLowerCase()}`);
       for (const c of list) {
+        if (!['CANCEL', 'ADMIN_CANCEL'].includes(c.claimType) && c.productOrderStatus !== 'CANCELED') continue;
         const row = getRow(c.productOrderId);
         if (!row) continue;
         results.requests += 1;
@@ -226,7 +228,8 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console }) {
       log('pull', false, e.message, { reason });
       setState('last_pull_at', new Date().toISOString());
       setState('last_pull_ok', '0');
-      throw e;
+      // 네이버 오류 문구를 「지금 동기화」 화면에 그대로 보여 준다 (그냥 던지면 500 「서버 오류」로 뭉개짐)
+      throw e instanceof HttpError ? e : new HttpError(502, e.message);
     } finally {
       running = false;
     }
