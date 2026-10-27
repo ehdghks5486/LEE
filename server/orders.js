@@ -45,8 +45,8 @@ const FACTORY_FIELDS = [
 
 const VENDOR_HIDDEN = new Set(['factory_cost', 'admin_memo', 'created_by']);
 
-// 외부 연동 훅 (스마트스토어 등). beforeApprove 는 throw 로 승인을 막을 수 있고, afterShipped 는 실패해도 출고를 막지 않음.
-const hooks = { beforeApprove: null, afterShipped: null, afterCancelled: null };
+// 외부 연동 훅 (스마트스토어·알림 등). beforeApprove 는 throw 로 승인을 막을 수 있고, 나머지는 실패해도 처리를 막지 않음.
+const hooks = { beforeApprove: null, afterShipped: null, afterCancelled: null, afterCreated: null, afterStatus: null };
 function setHooks(h) { Object.assign(hooks, h); }
 
 class HttpError extends Error {
@@ -283,7 +283,9 @@ function createOrder(db, user, body) {
     recipient_name, recipient_phone, zip_code, address, address_detail, install_note, admin_memo,
     created_by: user.id,
   }, user, '주문 접수 (규격·옵션 자동 검증 통과)');
-  return serializeOrder(getOrderRow(db, orderId), user.role);
+  const created = getOrderRow(db, orderId);
+  if (hooks.afterCreated) hooks.afterCreated(created, user);
+  return serializeOrder(created, user.role);
 }
 
 function insertOrder(db, f, actor, note) {
@@ -465,6 +467,7 @@ function changeStatus(db, user, id, body) {
   const updated = getOrderRow(db, id);
   if (to === 'shipped' && hooks.afterShipped) hooks.afterShipped(updated, user);
   if (to === 'cancelled' && hooks.afterCancelled) hooks.afterCancelled(updated, user);
+  if (hooks.afterStatus) hooks.afterStatus(updated, order.status, to, user);
   return serializeOrder(updated, user.role);
 }
 

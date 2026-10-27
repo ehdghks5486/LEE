@@ -100,18 +100,24 @@
         <div class="logo"><img src="/icons/logo-white.png" alt="${esc(state.meta?.company_name || 'BLACKOUT')}" /><small>주문관리</small></div>
         <div class="row">
           <div class="who">${esc(state.user.name)}<span class="role">${roleName(state.user.role)}</span></div>
+          <button data-action="notify" title="휴대폰 알림">알림</button>
           <button data-action="password" title="비밀번호 변경">비밀번호</button>
           <button data-action="logout">로그아웃</button>
         </div>
       </header>
       <nav class="nav">${nav.map(([p, l]) => `<a href="#${p}" class="${p === activePath ? 'active' : ''}">${l}</a>`).join('')}</nav>
       <main id="main"></main>`;
-    app.querySelector('[data-action=logout]').onclick = async () => { await api('POST', '/api/auth/logout', {}); state.user = null; state.meta = null; go('/'); render(); };
+    app.querySelector('[data-action=logout]').onclick = async () => {
+      await disablePush().catch(() => {}); // 같은 휴대폰에 다른 계정이 로그인해도 이전 계정 알림이 가지 않게
+      await api('POST', '/api/auth/logout', {}); state.user = null; state.meta = null; go('/'); render();
+    };
     app.querySelector('[data-action=password]').onclick = () => go('/password');
+    app.querySelector('[data-action=notify]').onclick = () => go('/notifications');
     const main = document.getElementById('main');
     const role = state.user.role;
     const p = r.parts;
     if (p[0] === 'password') return viewPassword(main);
+    if (p[0] === 'notifications') return viewNotifications(main);
     if (p[0] === 'orders' && p[1] === 'new' && role !== 'factory') return viewNewOrder(main, r);
     if (p[0] === 'orders' && p[1]) return viewOrderDetail(main, Number(p[1]));
     if (role === 'admin' && p[0] === 'stats') return viewStats(main, r);
@@ -123,6 +129,85 @@
   }
 
   const roleName = (r) => ({ admin: '관리자', vendor: '업체', factory: '공장' }[r] || r);
+
+  // ---------- 휴대폰 알림 ----------
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const PUSH_TOPICS = {
+    admin: ['업체 새 주문 · 업체 주문 취소', '스마트스토어 새 주문 · 확인 필요 · 취소 요청', '송장 후보 고르기 · 송장 못 찾음'],
+    factory: ['새 제작 주문서 (발주 승인)', '송장 후보 고르기 · 송장 못 찾음'],
+    vendor: ['발주 승인', '출고 · 송장번호 등록'],
+  };
+  async function currentPushSub() {
+    if (!pushSupported()) return null;
+    const reg = await navigator.serviceWorker.ready;
+    return reg.pushManager.getSubscription();
+  }
+  function b64ToU8(s) {
+    const b = atob((s + '='.repeat((4 - (s.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from(b, (c) => c.charCodeAt(0));
+  }
+  async function enablePush() {
+    if (!pushSupported()) throw new Error(isIOS && !isStandalone() ? '아이폰은 Safari 공유 버튼 → 「홈 화면에 추가」로 설치한 앱에서만 알림을 켤 수 있습니다.' : '이 브라우저는 알림을 지원하지 않습니다.');
+    const perm = await Notification.requestPermission(); // 아이폰은 버튼을 누른 직후에만 허용 창이 뜬다
+    if (perm !== 'granted') throw new Error('알림이 차단돼 있습니다. 휴대폰 설정에서 이 앱(또는 브라우저)의 알림을 허용해 주세요.');
+    const { key } = await api('GET', '/api/push/key');
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(key) }));
+    await api('POST', '/api/push/subscribe', { subscription: sub.toJSON() });
+  }
+  async function disablePush() {
+    const sub = await currentPushSub();
+    if (!sub) return;
+    await api('POST', '/api/push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {});
+    await sub.unsubscribe();
+  }
+
+  async function viewNotifications(main) {
+    const sub = await currentPushSub().catch(() => null);
+    const on = !!sub && Notification.permission === 'granted';
+    main.innerHTML = `
+      <h1>휴대폰 알림</h1>
+      <div class="card">
+        <div class="title">${on ? '이 휴대폰으로 알림을 받고 있습니다' : '이 휴대폰은 알림이 꺼져 있습니다'}</div>
+        <p class="small muted" style="margin-bottom:4px">받는 알림</p>
+        <ul class="small">${(PUSH_TOPICS[state.user.role] || []).map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
+        ${!pushSupported() ? `<div class="notice">${isIOS
+          ? '아이폰은 Safari에서 공유 버튼 → 「홈 화면에 추가」 → 홈 화면의 BLACKOUT 아이콘으로 열어야 알림을 켤 수 있습니다 (iOS 16.4 이상).'
+          : '이 브라우저는 알림을 지원하지 않습니다. 크롬이나 삼성 인터넷으로 열어 주세요.'}</div>` : ''}
+        <div class="error" id="pushErr"></div>
+        <div class="actions">${pushSupported() ? (on
+          ? '<button class="btn" id="pushTest">시험 알림 보내기</button><button class="btn" id="pushOff">알림 끄기</button>'
+          : '<button class="btn primary" id="pushOn">알림 켜기</button>') : ''}</div>
+      </div>`;
+    const bind = (id, fn) => {
+      const b = document.getElementById(id);
+      if (b) b.onclick = async () => { busy(b, true); try { await fn(b); } catch (e) { document.getElementById('pushErr').textContent = e.message; busy(b, false); } };
+    };
+    bind('pushOn', async () => { await enablePush(); toast('알림을 켰습니다.'); render(); });
+    bind('pushOff', async () => { await disablePush(); toast('알림을 껐습니다.'); render(); });
+    bind('pushTest', async (b) => {
+      const r = await api('POST', '/api/push/test', {});
+      toast(r.sent ? '시험 알림을 보냈습니다.' : '보낼 기기가 없습니다. 알림을 다시 켜 주세요.', !r.sent);
+      busy(b, false);
+    });
+  }
+
+  // 주문 목록 위: 아직 알림을 안 켠 휴대폰에 한 번 권하기 (「나중에」 누르면 그 기기에서는 다시 안 띄움)
+  async function showPushPrompt(box) {
+    try {
+      if (!pushSupported() || Notification.permission === 'denied' || localStorage.getItem('pushPromptDismissed')) return;
+      if (await currentPushSub()) return;
+    } catch { return; }
+    box.innerHTML = `<div class="notice row between"><span>새 주문 알림을 이 휴대폰으로 받으시겠어요?</span>
+      <span class="row"><button class="btn primary sm" id="ppOn">알림 켜기</button><button class="btn sm" id="ppLater">나중에</button></span></div>`;
+    document.getElementById('ppOn').onclick = async (e) => {
+      busy(e.target, true);
+      try { await enablePush(); box.innerHTML = ''; toast('알림을 켰습니다.'); } catch (err) { toast(err.message, true); busy(e.target, false); }
+    };
+    document.getElementById('ppLater').onclick = () => { try { localStorage.setItem('pushPromptDismissed', '1'); } catch {} box.innerHTML = ''; };
+  }
 
   // ---------- login ----------
   function renderLogin() {
@@ -198,6 +283,7 @@
         <h1>${role === 'factory' ? '제작 주문서' : role === 'admin' ? '주문관리' : '내 주문'}</h1>
         ${role !== 'factory' ? '<a class="btn primary sm" href="#/orders/new">+ 새 주문</a>' : ''}
       </div>
+      <div id="pushPrompt"></div>
       <div class="tabs">${tabs.map(([s, l]) => `<button data-status="${s}" class="${s === status ? 'active' : ''}">${l}</button>`).join('')}</div>
       <form class="filters" id="filterForm">
         <input type="text" name="q" placeholder="주문번호 · 수령인 · 송장번호${role === 'admin' ? ' · 업체' : ''}" value="${esc(q)}" />
@@ -215,6 +301,7 @@
     if (status) params.set('status', status);
     if (q) params.set('q', q);
     if (vendorId) params.set('vendor_id', vendorId);
+    showPushPrompt(document.getElementById('pushPrompt'));
     try {
       const { orders } = await api('GET', `/api/orders?${params}`);
       const list = document.getElementById('list');

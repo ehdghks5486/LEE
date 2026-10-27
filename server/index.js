@@ -13,6 +13,7 @@ const { MockNaverClient } = require('./smartstore/mock');
 const { NaverCommerceClient } = require('./smartstore/client');
 const { createTrackingLookup } = require('./tracking-lookup');
 const daesin = require('./carriers/daesin');
+const { createPush } = require('./push');
 
 const { HttpError, STATUSES } = orders;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -116,22 +117,65 @@ function resolveSmartstore(opt = {}) {
   return { mode: 'off', client: null };
 }
 
-function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart = false, trackingSearch = daesin.searchByReceiverPhone, trackingDelayMs } = {}) {
+function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart = false, trackingSearch = daesin.searchByReceiverPhone, trackingDelayMs, pushSend } = {}) {
   const db = openDatabase(dbPath || process.env.DB_PATH || path.join(__dirname, '..', 'data', 'blackout.db'));
   auth.purgeExpired(db);
   const router = createRouter();
 
+  // ----- 휴대폰 알림: 누구에게 무엇을 (공장 알림에는 가격·업체명을 넣지 않는다) -----
+  const push = createPush({ db, sendImpl: pushSend });
+  const won = (n) => `${Number(n || 0).toLocaleString('ko-KR')}원`;
+  const specOf = (o) => `${o.product_type_name || o.product_type} ${o.width_mm}×${o.height_mm}mm${o.quantity > 1 ? ` ×${o.quantity}` : ''}`;
+  const orderUrl = (o) => `/#/orders/${o.id}`;
+  const notifyEvent = {
+    created(o, user) {
+      if (user.role !== 'vendor') return;
+      push.notify(['admin'], { title: `새 주문 · ${o.vendor_name || '업체'}`, body: `${o.order_no} · ${specOf(o)} · ${won(o.total_amount)}\n입금 확인 후 승인해 주세요.`, url: orderUrl(o), tag: `order-${o.id}` });
+    },
+    status(o, from, to, user) {
+      if (to === 'approved') {
+        push.notify(['factory'], { title: '새 제작 주문서', body: `${o.order_no} · ${specOf(o)}`, url: orderUrl(o), tag: `order-${o.id}` });
+        if (o.vendor_id) push.notify(['vendor'], { title: '발주 승인', body: `${o.order_no} 제작에 들어갑니다.`, url: orderUrl(o), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
+      }
+      if (to === 'shipped' && o.vendor_id) {
+        push.notify(['vendor'], { title: '출고되었습니다', body: `${o.order_no} · ${o.tracking_carrier} ${o.tracking_no || '(송장번호 등록 중)'}`, url: orderUrl(o), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
+      }
+      if (to === 'cancelled' && user.role === 'vendor') {
+        push.notify(['admin'], { title: `업체 주문 취소 · ${o.vendor_name || ''}`, body: o.order_no, url: orderUrl(o), tag: `order-${o.id}` });
+      }
+    },
+    trackingFound(o) {
+      if (o.vendor_id) push.notify(['vendor'], { title: '송장번호 등록', body: `${o.order_no} · ${o.tracking_carrier} ${o.tracking_no}`, url: orderUrl(o), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
+    },
+    trackingAttention(o, kind, n) {
+      const body = kind === 'multiple' ? `${o.order_no} · 대신택배 송장 후보 ${n}건, 맞는 것을 골라 주세요.` : `${o.order_no} · 대신택배에서 송장을 찾지 못했습니다. 직접 입력해 주세요.`;
+      push.notify(['admin', 'factory'], { title: '송장 확인 필요', body, url: orderUrl(o), tag: `order-${o.id}` });
+    },
+    smartstore(kind, data) {
+      if (kind === 'paid') {
+        const parts = [data.imported ? `자동 등록 ${data.imported}건` : null, data.review ? `확인 필요 ${data.review}건 (치수 보완)` : null].filter(Boolean);
+        push.notify(['admin'], { title: `스마트스토어 새 주문 ${data.imported + data.review}건`, body: parts.join(' · '), url: data.review ? '/#/smartstore?filter=needs_review' : '/#/orders', tag: 'smartstore-paid' });
+      }
+      if (kind === 'cancel_request') {
+        push.notify(['admin'], { title: '스마트스토어 취소 요청', body: `${data.row.product_name || ''} · 상품주문 ${data.row.product_order_id}`, url: '/#/smartstore?filter=cancel', tag: `ss-cancel-${data.row.product_order_id}` });
+      }
+    },
+  };
+
   const ss = resolveSmartstore(smartstore);
-  const sync = createSync({ db, client: ss.client, mode: ss.mode, pollMinutes: Number(smartstore.pollMinutes || process.env.SMARTSTORE_POLL_MINUTES) || 5 });
+  const sync = createSync({ db, client: ss.client, mode: ss.mode, pollMinutes: Number(smartstore.pollMinutes || process.env.SMARTSTORE_POLL_MINUTES) || 5, onEvent: notifyEvent.smartstore });
   const tracking = createTrackingLookup({
     db, search: trackingSearch, delayMs: trackingDelayMs,
-    onFound: (order) => { sync.dispatchOrder(order).catch(() => {}); },
+    onFound: (order) => { sync.dispatchOrder(order).catch(() => {}); notifyEvent.trackingFound(order); },
+    onAttention: notifyEvent.trackingAttention,
   });
   orders.setHooks({
     afterShipped: (order) => {
       if (order.tracking_no) sync.dispatchOrder(order).catch(() => {});
       else if (order.tracking_carrier === orders.AUTO_LOOKUP_CARRIER) tracking.request(order);
     },
+    afterCreated: notifyEvent.created,
+    afterStatus: notifyEvent.status,
   });
   if (autoStart) {
     sync.start();
@@ -172,6 +216,29 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
     validatePassword(new_password);
     db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(new_password), ctx.user.id);
     json(ctx.res, 200, { ok: true });
+  });
+
+  // ----- 휴대폰 알림 -----
+  router.add('GET', '/api/push/key', async (ctx) => {
+    requireRole(ctx.user);
+    json(ctx.res, 200, { key: push.publicKey, devices: push.countFor(ctx.user) });
+  });
+  router.add('POST', '/api/push/subscribe', async (ctx) => {
+    requireRole(ctx.user);
+    try { push.subscribe(ctx.user, ctx.body.subscription, ctx.req.headers['user-agent']); }
+    catch (e) { throw new HttpError(e.status || 400, e.message); }
+    push.rememberSite(ctx.req.headers.host);
+    json(ctx.res, 200, { ok: true, devices: push.countFor(ctx.user) });
+  });
+  router.add('POST', '/api/push/unsubscribe', async (ctx) => {
+    requireRole(ctx.user);
+    push.unsubscribe(ctx.user, ctx.body.endpoint);
+    json(ctx.res, 200, { ok: true, devices: push.countFor(ctx.user) });
+  });
+  router.add('POST', '/api/push/test', async (ctx) => {
+    requireRole(ctx.user);
+    const sent = await push.notifyUser(ctx.user, { title: 'BLACKOUT 알림 시험', body: '이 휴대폰으로 주문 알림이 옵니다.', url: '/#/notifications', tag: 'push-test' });
+    json(ctx.res, 200, { sent });
   });
 
   // ----- meta -----
@@ -529,6 +596,7 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
   server.db = db;
   server.sync = sync;
   server.tracking = tracking;
+  server.push = push;
   server.naverClient = ss.client;
   const origClose = server.close.bind(server);
   server.close = (cb) => { sync.stop(); tracking.stop(); return origClose(cb); };

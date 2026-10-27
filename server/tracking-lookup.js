@@ -11,7 +11,7 @@ const { HttpError } = orders;
 const DAY = 24 * 60 * 60 * 1000;
 const kstDate = (ms) => new Date(ms + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-function createTrackingLookup({ db, search, onFound = () => {}, intervalMinutes = 30, giveUpDays = 3, delayMs = 1500, logger = console, now = () => Date.now() }) {
+function createTrackingLookup({ db, search, onFound = () => {}, onAttention = () => {}, intervalMinutes = 30, giveUpDays = 3, delayMs = 1500, logger = console, now = () => Date.now() }) {
   let timer = null;
   let running = false;
 
@@ -64,9 +64,11 @@ function createTrackingLookup({ db, search, onFound = () => {}, intervalMinutes 
       } else if (cands.length > 1) {
         setRow(orderId, { ...base, status: 'multiple', candidates: JSON.stringify(cands) });
         orders.systemNote(db, orderId, `대신택배에서 송장 후보 ${cands.length}건을 찾았습니다. 주문 화면에서 맞는 송장을 골라 주세요.`);
+        onAttention(order, 'multiple', cands.length);
       } else if (now() - shippedMs > giveUpDays * DAY) {
         setRow(orderId, { ...base, status: 'not_found' });
         orders.systemNote(db, orderId, `출고 후 ${giveUpDays}일 동안 대신택배에서 송장을 찾지 못했습니다. 송장번호를 직접 입력해 주세요.`);
+        onAttention(order, 'not_found');
       } else {
         setRow(orderId, base);
       }

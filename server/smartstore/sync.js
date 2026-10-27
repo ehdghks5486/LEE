@@ -14,7 +14,7 @@ const { DELIVERY_COMPANY_CODES } = require('./client');
 const { HttpError } = orders;
 const DAY = 24 * 3600 * 1000;
 
-function createSync({ db, client, mode, pollMinutes = 5, logger = console }) {
+function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEvent = () => {} }) {
   const getState = (k) => db.prepare('SELECT value FROM sync_state WHERE key = ?').get(k)?.value ?? null;
   const setState = (k, v) => db.prepare('INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v);
   const log = (kind, ok, message, details) => {
@@ -156,6 +156,7 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console }) {
       }
     }
     setState('cursor_payed', cursor);
+    if (imported || review) onEvent('paid', { imported, review });
     return { fetched: list.length, new: newIds.length, imported, review };
   }
 
@@ -169,6 +170,7 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console }) {
         const row = getRow(c.productOrderId);
         if (!row) continue;
         results.requests += 1;
+        if (type === 'CANCEL_REQUEST' && row.claim_status !== 'CANCEL_REQUEST') onEvent('cancel_request', { row });
         db.prepare("UPDATE smartstore_orders SET claim_status = ?, naver_status = ?, cancel_requested_at = COALESCE(cancel_requested_at, datetime('now','localtime')), updated_at = datetime('now','localtime') WHERE product_order_id = ?")
           .run(type === 'CANCELED' ? 'CANCEL_DONE' : 'CANCEL_REQUEST', c.productOrderStatus || row.naver_status, c.productOrderId);
         if (!row.order_id) continue;

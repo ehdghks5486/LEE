@@ -154,6 +154,18 @@ CREATE TABLE IF NOT EXISTS sync_state (
   value TEXT
 );
 
+-- 휴대폰 알림 구독 (기기마다 1행)
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  last_ok_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 -- 송장 자동 찾기 (송장 없이 출고된 대신택배 주문)
 CREATE TABLE IF NOT EXISTS tracking_lookups (
   order_id INTEGER PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
