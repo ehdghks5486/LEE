@@ -97,7 +97,7 @@
     const activePath = r.parts[0] === 'orders' && r.parts[1] === 'new' ? '/orders/new' : `/${r.parts[0] || 'orders'}`;
     app.innerHTML = `
       <header class="topbar">
-        <div class="logo">${esc(state.meta?.company_name || 'BLACKOUT')}<small>주문관리</small></div>
+        <div class="logo"><img src="/icons/logo-white.png" alt="${esc(state.meta?.company_name || 'BLACKOUT')}" /><small>주문관리</small></div>
         <div class="row">
           <div class="who">${esc(state.user.name)}<span class="role">${roleName(state.user.role)}</span></div>
           <button data-action="password" title="비밀번호 변경">비밀번호</button>
@@ -128,7 +128,7 @@
   function renderLogin() {
     app.innerHTML = `
       <div class="login">
-        <div class="brand">BLACKOUT</div>
+        <div class="brand"><img src="/icons/logo-dark.png" alt="BLACKOUT" /></div>
         <div class="sub">업체 · 관리자 · 제조공장 통합 주문관리</div>
         <form id="loginForm" class="card">
           <label class="f"><span>아이디</span><input type="text" name="username" autocomplete="username" autocapitalize="none" required /></label>
