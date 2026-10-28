@@ -74,7 +74,10 @@
     main.innerHTML = `
       <div class="row between no-print">
         <a href="#/orders" class="muted small">← 목록</a>
-        ${role === 'factory' ? '<button class="btn sm" id="printBtn">주문서 인쇄</button>' : ''}
+        <span class="row">
+          <button class="btn sm" id="copyFactoryText" title="카톡·문자로 공장에 보낼 때">공장 전달 문구 복사</button>
+          ${role === 'factory' ? '<button class="btn sm" id="printBtn">주문서 인쇄</button>' : ''}
+        </span>
       </div>
       <div class="row between"><h1 style="margin:8px 0">${esc(o.order_no)}</h1><span class="chip ${o.status}">${esc(o.status_name)}</span></div>
       ${o.source === 'smartstore' ? `<div class="small muted">스마트스토어 주문${o.external_ref ? ' · ' + esc(o.external_ref) : ''}</div>` : ''}
@@ -156,6 +159,7 @@
       </div>`;
 
     if (role === 'factory') document.getElementById('printBtn').onclick = () => window.print();
+    document.getElementById('copyFactoryText').onclick = () => copyText(factoryText(o), '공장 전달 문구를 복사했습니다.');
     renderActions(document.getElementById('actionArea'), o, allowed_transitions, role);
 
     main.querySelectorAll('[data-lookup]').forEach((b) => (b.onclick = async () => {
@@ -210,6 +214,38 @@
         };
       };
     }
+  }
+
+  // 공장에 카톡·문자로 보내던 형식 그대로 (가격·업체명은 넣지 않는다)
+  function factoryText(o) {
+    const m = state.meta;
+    const cm = (mm) => String(Math.round(mm) / 10);
+    return [
+      `수취인명: ${o.recipient_name}`,
+      `배송지 주소: ${[o.address, o.address_detail].filter(Boolean).join(' ')}`,
+      `연락처: ${o.recipient_phone}`,
+      '',
+      `(가로cm x 세로cm): ${cm(o.width_mm)} x ${cm(o.height_mm)}`,
+      `개폐 방식: ${o.product_type_name || nameOf(m.product_types, o.product_type)}`,
+      `원단 색상: ${nameOf(m.fabric_colors, o.fabric_color)}`,
+      `프레임 색상: ${nameOf(m.frame_colors, o.frame_color)}`,
+      ...(o.quantity > 1 ? [`수량: ${o.quantity}개`] : []),
+      ...(o.install_note ? ['', `요청사항: ${o.install_note}`] : []),
+    ].join('\n');
+  }
+  async function copyText(text, okMsg) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // 복사 권한이 없는 브라우저: 숨은 입력칸으로 복사
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (!ok) { window.prompt('아래 문구를 길게 눌러 복사하세요.', text); return; }
+    }
+    toast(okMsg);
   }
 
   // 송장 없이 출고된 대신택배 주문: 자동 찾기 상태 · 후보 고르기
