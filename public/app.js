@@ -220,6 +220,8 @@
   function factoryText(o) {
     const m = state.meta;
     const cm = (mm) => String(Math.round(mm) / 10);
+    // 스마트스토어 주문의 요청사항에 붙는 원본 「옵션: …」 줄은 위 규격과 같은 내용이라 뺀다
+    const note = String(o.install_note || '').split('\n').filter((l) => l.trim() && !l.startsWith('옵션:')).join('\n');
     return [
       `수취인명: ${o.recipient_name}`,
       `배송지 주소: ${[o.address, o.address_detail].filter(Boolean).join(' ')}`,
@@ -230,7 +232,7 @@
       `원단 색상: ${nameOf(m.fabric_colors, o.fabric_color)}`,
       `프레임 색상: ${nameOf(m.frame_colors, o.frame_color)}`,
       ...(o.quantity > 1 ? [`수량: ${o.quantity}개`] : []),
-      ...(o.install_note ? ['', `요청사항: ${o.install_note}`] : []),
+      ...(note ? ['', `요청사항: ${note}`] : []),
     ].join('\n');
   }
   async function copyText(text, okMsg) {
