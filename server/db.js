@@ -188,6 +188,7 @@ const DEFAULT_SETTINGS = [
   ['min_size_mm', '300', '최소 제작 치수 (mm)'],
   ['max_size_mm', '3000', '최대 제작 치수 (mm)'],
   ['default_carrier', '대신택배', '기본 택배사 (공장 출고 시 처음 선택)'],
+  ['smartstore_qty_unit_sqm', '0.1', '스마트스토어 수량 1개 = 몇 ㎡ (면적 단위 판매. 0이면 수량 = 장수)'],
 ];
 
 const DEFAULT_PRODUCT_TYPES = [
@@ -203,6 +204,11 @@ function openDatabase(dbPath) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
+  // 나중에 생긴 칸: 이미 있는 DB 에 없으면 붙인다
+  const addColumn = (table, col, type) => {
+    if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  };
+  addColumn('smartstore_orders', 'merged_into', 'TEXT'); // 추가상품이 합산된 블라인드 상품주문번호
   seed(db);
   return db;
 }

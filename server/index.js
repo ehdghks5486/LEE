@@ -503,7 +503,7 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
   });
   router.add('PUT', '/api/settings', async (ctx) => {
     requireRole(ctx.user, 'admin');
-    const numericKeys = ['default_unit_price_per_sqm', 'min_billable_area_sqm', 'shipping_fee', 'factory_cost_per_sqm', 'min_size_mm', 'max_size_mm'];
+    const numericKeys = ['default_unit_price_per_sqm', 'min_billable_area_sqm', 'shipping_fee', 'factory_cost_per_sqm', 'min_size_mm', 'max_size_mm', 'smartstore_qty_unit_sqm'];
     const known = new Set(['company_name', 'default_carrier', ...numericKeys]);
     if (ctx.body.settings?.default_carrier !== undefined && !CARRIERS.includes(String(ctx.body.settings.default_carrier))) {
       throw new HttpError(400, '기본 택배사를 목록에서 골라 주세요.');

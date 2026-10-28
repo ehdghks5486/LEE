@@ -25,7 +25,7 @@ class MockNaverClient {
     const sample = SAMPLE_OPTIONS[(n - 1) % SAMPLE_OPTIONS.length];
     const now = new Date();
     const productOrderId = `${now.getFullYear()}${String(n).padStart(10, '0')}`;
-    const orderId = `${now.getFullYear()}${String(n).padStart(8, '0')}`;
+    const orderId = overrides.orderId ?? `${now.getFullYear()}${String(n).padStart(8, '0')}`;
     const productAmount = overrides.productAmount ?? 260000;
     const deliveryFee = overrides.deliveryFee ?? 0;
     const entry = {

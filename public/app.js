@@ -535,7 +535,7 @@
     const spec = row.parsed_spec || {};
     const specText = [spec.product_type ? nameOf(m.product_types, spec.product_type) : null, spec.width_mm && spec.height_mm ? `${num(spec.width_mm)} × ${num(spec.height_mm)} mm` : null,
       spec.frame_color ? `프레임 ${nameOf(m.frame_colors, spec.frame_color)}` : null, spec.fabric_color ? `원단 ${nameOf(m.fabric_colors, spec.fabric_color)}` : null].filter(Boolean).join(' · ');
-    const badge = row.import_status === 'imported' ? `<span class="chip ${row.order_status}">${esc(nameOf(m.statuses, row.order_status))}</span>` : row.import_status === 'ignored' ? '<span class="chip">무시됨</span>' : '<span class="chip on_hold">확인 필요</span>';
+    const badge = row.import_status === 'imported' ? `<span class="chip ${row.order_status}">${esc(nameOf(m.statuses, row.order_status))}</span>` : row.import_status === 'ignored' ? '<span class="chip">무시됨</span>' : row.import_status === 'merged' ? '<span class="chip">추가상품 · 블라인드 주문에 합산</span>' : '<span class="chip on_hold">확인 필요</span>';
     const addr = row.shipping_address || {};
     return `
       <div class="card" data-pid="${esc(row.product_order_id)}">

@@ -8,6 +8,7 @@
  *  - 출고 훅:     공장 송장 등록 시 네이버 발송처리 호출 (실패해도 출고는 유지, 이후 재시도)
  */
 const orders = require('../orders');
+const { getSettings } = require('../db');
 const { parseSpec } = require('./parse');
 const { DELIVERY_COMPANY_CODES } = require('./client');
 
@@ -27,6 +28,22 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
 
   let timer = null;
   let running = false;
+
+  /**
+   * 네이버 수량 → 블라인드 장수.
+   * 이 스토어는 면적 단위(기본 0.1㎡)로 팔아서, 2.38×1.18m 한 장이 「수량 28」로 들어온다.
+   * 한 장당 단위 수 = 올림(면적 ÷ 단위), 최소 주문면적 이하면 최소 면적만큼. 장수 = 반올림(수량 ÷ 한 장당 단위 수).
+   * 설정이 0 이면 네이버 수량을 그대로 장수로 쓴다.
+   */
+  function piecesFor(spec, naverQty) {
+    const qty = Math.max(1, Number(naverQty) || 1);
+    const s = getSettings(db);
+    const unit = Number(s.smartstore_qty_unit_sqm);
+    if (!(unit > 0) || !spec.width_mm || !spec.height_mm) return qty;
+    const area = (spec.width_mm * spec.height_mm) / 1e6;
+    const perPiece = Math.max(Math.ceil(area / unit - 1e-9), Math.ceil((Number(s.min_billable_area_sqm) || 0) / unit - 1e-9), 1);
+    return Math.max(1, Math.round(qty / perPiece));
+  }
 
   // ---------- 수집 ----------
   async function fetchChanges(type, stateKey) {
@@ -117,7 +134,8 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
     if (!row) throw new HttpError(404, '스마트스토어 주문을 찾을 수 없습니다.');
     if (row.order_id) throw new HttpError(409, '이미 내부 주문으로 등록된 상품주문입니다.');
     const raw = JSON.parse(row.raw || '{}');
-    const spec = { ...JSON.parse(row.parsed_spec || '{}'), ...(specOverride || {}), quantity: row.quantity || 1 };
+    const base = { ...JSON.parse(row.parsed_spec || '{}'), ...(specOverride || {}) };
+    const spec = { ...base, quantity: piecesFor(base, row.quantity) };
     const po = raw.productOrder || {};
     const recipient = recipientFrom(raw.shippingAddress || {}, raw.order || {}, po);
     const installNote = [po.shippingMemo, po.productOption ? `옵션: ${po.productOption}` : null].filter(Boolean).join('\n');
@@ -156,8 +174,68 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
       }
     }
     setState('cursor_payed', cursor);
+    const merged = mergeAddons();
+    review = Math.max(0, review - merged);
+    fixPieceCounts();
     if (imported || review) onEvent('paid', { imported, review });
-    return { fetched: list.length, new: newIds.length, imported, review };
+    return { fetched: list.length, new: newIds.length, imported, review, merged };
+  }
+
+  /**
+   * 규격이 하나도 없는 상품주문(예: 「맞춤제작 추가금액」 면적 올림분)이 같은 네이버 주문의 블라인드와 함께 왔으면
+   * 「확인 필요」에 두지 않고 그 블라인드 주문 매출에 더한다. 제작할 물건이 아니므로 장수·원가는 그대로.
+   */
+  function mergeAddons() {
+    const rows = db.prepare(
+      `SELECT a.*, b.order_id AS main_order_id FROM smartstore_orders a
+       JOIN smartstore_orders b ON b.naver_order_id = a.naver_order_id AND b.product_order_id != a.product_order_id AND b.order_id IS NOT NULL
+       WHERE a.import_status = 'needs_review' AND a.order_id IS NULL AND a.naver_order_id IS NOT NULL`
+    ).all();
+    let n = 0;
+    for (const a of rows) {
+      const spec = JSON.parse(a.parsed_spec || '{}');
+      if (spec.width_mm || spec.height_mm) continue; // 치수가 조금이라도 있으면 진짜 블라인드일 수 있음 → 사람이 확인
+      const main = orders.getOrderRow(db, a.main_order_id);
+      if (!main) continue;
+      const pay = Number(a.payment_amount) || 0;
+      db.exec('BEGIN');
+      try {
+        if (main.status !== 'cancelled' && pay) {
+          db.prepare("UPDATE orders SET product_amount = product_amount + ?, total_amount = total_amount + ?, updated_at = datetime('now','localtime') WHERE id = ?").run(pay, pay, main.id);
+        }
+        db.prepare("UPDATE smartstore_orders SET import_status = 'merged', merged_into = ?, updated_at = datetime('now','localtime') WHERE product_order_id = ?").run(main.external_ref, a.product_order_id);
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
+      orders.systemNote(db, main.id, `같은 네이버 주문의 추가상품을 이 주문 매출에 합산: ${a.product_name || a.product_option || '추가상품'} ${pay.toLocaleString('ko-KR')}원 (상품주문 ${a.product_order_id})`);
+      n += 1;
+    }
+    return n;
+  }
+
+  /**
+   * 이미 들어온 스마트스토어 주문 중 네이버 수량을 장수로 잘못 받아 둔 것(제작 전)을 바로잡는다.
+   * 결제금액은 그대로 두고 장수·과금면적·제작원가만 다시 계산한다.
+   */
+  function fixPieceCounts() {
+    const rows = db.prepare(
+      `SELECT s.product_order_id, s.quantity AS naver_qty, s.parsed_spec, o.id FROM smartstore_orders s JOIN orders o ON o.id = s.order_id
+       WHERE s.import_status = 'imported' AND o.source = 'smartstore' AND o.status IN ('received', 'on_hold')`
+    ).all();
+    for (const r of rows) {
+      const o = orders.getOrderRow(db, r.id);
+      const spec = { product_type: o.product_type, width_mm: o.width_mm, height_mm: o.height_mm, frame_color: o.frame_color, fabric_color: o.fabric_color };
+      const pieces = piecesFor(spec, r.naver_qty);
+      if (pieces === o.quantity) continue;
+      const q = orders.quoteFor(db, { ...spec, quantity: pieces }, null);
+      if (!q.ok) continue;
+      const unitPrice = q.quote.billed_area_sqm * pieces > 0 ? Math.round(o.product_amount / (q.quote.billed_area_sqm * pieces)) : 0;
+      db.prepare("UPDATE orders SET quantity = ?, area_sqm = ?, billed_area_sqm = ?, factory_cost = ?, unit_price = ?, updated_at = datetime('now','localtime') WHERE id = ?")
+        .run(pieces, q.quote.area_sqm, q.quote.billed_area_sqm, q.quote.factory_cost, unitPrice, o.id);
+      orders.systemNote(db, o.id, `수량 바로잡음: 네이버 수량 ${r.naver_qty}은(는) 면적 단위라 블라인드 ${pieces}장으로 고침 (${o.quantity}장 → ${pieces}장, 제작원가 다시 계산)`);
+    }
   }
 
   async function pullCancels() {
@@ -242,16 +320,26 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
     if (order.source !== 'smartstore' || !order.external_ref || !enabled()) return null;
     const row = getRow(order.external_ref);
     if (row && row.confirmed_at) return null;
-    const r = await client.confirm([order.external_ref]);
+    const addons = addonIds(order.external_ref);
+    const r = await client.confirm([order.external_ref, ...addons]);
     const fail = r.fail.find((f) => f.productOrderId === order.external_ref);
     if (fail && !/이미|already/i.test(fail.message || '')) {
       log('confirm', false, `${order.order_no} 발주확인 실패: ${fail.message}`, fail);
       throw new HttpError(502, `네이버 발주확인 실패: ${fail.message || fail.code}`);
     }
-    db.prepare("UPDATE smartstore_orders SET confirmed_at = datetime('now','localtime'), place_order_status = 'OK', updated_at = datetime('now','localtime') WHERE product_order_id = ?").run(order.external_ref);
-    log('confirm', true, `${order.order_no} 발주확인 완료`);
+    const markConfirmed = db.prepare("UPDATE smartstore_orders SET confirmed_at = datetime('now','localtime'), place_order_status = 'OK', updated_at = datetime('now','localtime') WHERE product_order_id = ?");
+    markConfirmed.run(order.external_ref);
+    for (const id of addons) {
+      const f = r.fail.find((x) => x.productOrderId === id);
+      if (f && !/이미|already/i.test(f.message || '')) orders.systemNote(db, order.id, `추가상품 ${id} 발주확인 실패: ${f.message || f.code}. 스마트스토어에서 직접 처리해 주세요.`);
+      else markConfirmed.run(id);
+    }
+    log('confirm', true, `${order.order_no} 발주확인 완료${addons.length ? ` (추가상품 ${addons.length}건 포함)` : ''}`);
     return '네이버 발주확인 전송';
   }
+
+  /** 이 블라인드 주문에 합산된 추가상품(같은 네이버 주문)의 상품주문번호들 */
+  const addonIds = (mainPid) => db.prepare("SELECT product_order_id FROM smartstore_orders WHERE merged_into = ? AND import_status = 'merged'").all(mainPid).map((r) => r.product_order_id);
 
   async function dispatchOrder(order) {
     if (order.source !== 'smartstore' || !order.external_ref || !enabled()) return null;
@@ -272,10 +360,18 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
       item.trackingNumber = order.tracking_no;
     }
     try {
-      const r = await client.dispatch([item]);
+      // 합산된 추가상품도 같은 송장으로 발송처리 (네이버에서는 따로 남아 있으면 미발송으로 잡힌다)
+      const addons = addonIds(pid).filter((id) => !getRow(id).dispatch_synced);
+      const r = await client.dispatch([item, ...addons.map((id) => ({ ...item, productOrderId: id }))]);
       const fail = r.fail.find((f) => f.productOrderId === pid);
       if (fail) throw new Error(fail.message || fail.code);
-      db.prepare("UPDATE smartstore_orders SET dispatch_synced = 1, dispatch_error = NULL, naver_status = 'DELIVERING', updated_at = datetime('now','localtime') WHERE product_order_id = ?").run(pid);
+      const markShipped = db.prepare("UPDATE smartstore_orders SET dispatch_synced = 1, dispatch_error = NULL, naver_status = 'DELIVERING', updated_at = datetime('now','localtime') WHERE product_order_id = ?");
+      markShipped.run(pid);
+      for (const id of addons) {
+        const f = r.fail.find((x) => x.productOrderId === id);
+        if (f) orders.systemNote(db, order.id, `추가상품 ${id} 발송처리 실패: ${f.message || f.code}. 스마트스토어에서 직접 처리해 주세요.`);
+        else markShipped.run(id);
+      }
       orders.systemNote(db, order.id, `스마트스토어 발송처리 전송 완료 (${order.tracking_carrier} ${order.tracking_no})`);
       log('dispatch', true, `${order.order_no} 발송처리 전송`);
       return true;
