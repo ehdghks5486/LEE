@@ -49,6 +49,7 @@ class MockNaverClient {
         },
         claimType: null,
         claimStatus: null,
+        ...(overrides.productOrderExtra || {}), // 실제 응답의 할인·수수료 항목을 그대로 넣어 시험할 때
       },
       order: { orderId, ordererName: overrides.name ?? `고객${n}`, ordererTel: '010-9999-0000', paymentDate: now.toISOString() },
       changes: [{ type: 'PAYED', at: now.toISOString() }],

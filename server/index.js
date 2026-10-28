@@ -311,7 +311,7 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
         data.smartstore = {
           product_order_id: row.product_order_id, naver_order_id: row.naver_order_id, naver_status: row.naver_status, claim_status: row.claim_status,
           confirmed_at: row.confirmed_at, dispatch_synced: !!row.dispatch_synced, dispatch_error: row.dispatch_error, orderer_name: row.orderer_name,
-          product_option: row.product_option, shipping_memo: row.shipping_memo,
+          product_option: row.product_option, shipping_memo: row.shipping_memo, settlement: sync.settlementFor(row.product_order_id),
         };
       }
     }

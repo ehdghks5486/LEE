@@ -74,6 +74,39 @@ test('수량 28(0.1㎡ 단위) = 블라인드 1장, 같은 주문의 추가금�
   assert.equal(mock.dispatched.get(addon)?.trackingNumber, '4001234567890', '추가상품 발송처리 누락');
 });
 
+test('매출은 고객 결제액이 아니라 정가 − 판매자 부담 할인 (실제 응답 숫자 그대로)', async () => {
+  const admin = client();
+  await admin('POST', '/api/auth/login', { username: 'admin', password: 'admin1234' });
+  // 10-28 실제 주문의 네이버 응답 항목: 정가 14,500×28, 판매자 즉시할인 86,800, 네이버 부담 상품쿠폰 3,000
+  const real = {
+    totalProductAmount: 406000, productDiscountAmount: 89800, sellerBurdenDiscountAmount: 86800, totalPaymentAmount: 316200,
+    paymentCommission: 6214, saleCommission: 0, knowledgeShoppingSellingInterlockCommission: 9576, channelCommission: 0, expectedSettlementAmount: 303410,
+  };
+  const addonRaw = { totalProductAmount: 11400, productDiscountAmount: 0, sellerBurdenDiscountAmount: 0, totalPaymentAmount: 11400, paymentCommission: 224, knowledgeShoppingSellingInterlockCommission: 342, expectedSettlementAmount: 10834 };
+  const pid = mock.addSampleOrder({ orderId: 'N-REAL-2', option: REAL_OPTION, quantity: 28, productAmount: 316200, productOrderExtra: real });
+  mock.addSampleOrder({ orderId: 'N-REAL-2', option: ADDON_OPTION, quantity: 1, productAmount: 11400, productOrderExtra: addonRaw });
+  await admin('POST', '/api/smartstore/sync', {});
+  const d = (await admin('GET', `/api/orders/${(await rowOf(admin, pid)).order_id}`)).data;
+  assert.equal(d.order.total_amount, 330600, `매출 ${d.order.total_amount}`);
+  assert.equal(d.smartstore.settlement.sale, 330600);
+  assert.equal(d.smartstore.settlement.naver_discount, 3000);
+  assert.equal(d.smartstore.settlement.commission, 6214 + 9576 + 224 + 342);
+  assert.equal(d.smartstore.settlement.expected_settlement, 303410 + 10834);
+});
+
+test('예전 기준(고객 결제액)으로 들어온 매출도 다음 동기화 때 바로잡힘', async () => {
+  const admin = client();
+  await admin('POST', '/api/auth/login', { username: 'admin', password: 'admin1234' });
+  const pid = mock.addSampleOrder({ option: REAL_OPTION, quantity: 28, productAmount: 316200, productOrderExtra: { totalProductAmount: 406000, sellerBurdenDiscountAmount: 86800, totalPaymentAmount: 316200 } });
+  await admin('POST', '/api/smartstore/sync', {});
+  const id = (await rowOf(admin, pid)).order_id;
+  server.db.prepare('UPDATE orders SET product_amount = 316200, total_amount = 316200 WHERE id = ?').run(id); // 예전 값 재현
+  await admin('POST', '/api/smartstore/sync', {});
+  const d = (await admin('GET', `/api/orders/${id}`)).data;
+  assert.equal(d.order.total_amount, 319200);
+  assert.ok(d.history.some((h) => (h.note || '').includes('매출 바로잡음')));
+});
+
 test('같은 크기 2장이면 수량 58 → 2장, 설정 0이면 네이버 수량 그대로', async () => {
   const admin = client();
   await admin('POST', '/api/auth/login', { username: 'admin', password: 'admin1234' });

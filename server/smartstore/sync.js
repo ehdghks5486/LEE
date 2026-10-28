@@ -15,6 +15,31 @@ const { DELIVERY_COMPANY_CODES } = require('./client');
 const { HttpError } = orders;
 const DAY = 24 * 3600 * 1000;
 
+/**
+ * 우리 매출로 잡을 금액 = 정가 합계 − 판매자가 부담한 할인.
+ * 고객 결제금액(totalPaymentAmount)은 네이버가 부담한 쿠폰까지 빠진 금액이라 쓰지 않는다
+ * (예: 정가 406,000 − 판매자 즉시할인 86,800 = 319,200, 네이버 쿠폰 3,000 이 빠진 결제액 316,200 이 아님).
+ * 배송비는 따로 받는다. 할인 항목이 없는 응답이면 결제금액 − 배송비로 대신한다.
+ */
+function saleAmountOf(po) {
+  if (po.totalProductAmount !== undefined && po.totalProductAmount !== null) {
+    return Number(po.totalProductAmount) - Number(po.sellerBurdenDiscountAmount || 0);
+  }
+  return Number(po.totalPaymentAmount ?? 0) - Number(po.deliveryFeeAmount ?? 0);
+}
+
+/** 네이버 정산 예정 금액·수수료 (응답에 있을 때만) */
+function settlementOf(po) {
+  const commission = ['paymentCommission', 'saleCommission', 'knowledgeShoppingSellingInterlockCommission', 'channelCommission']
+    .reduce((s, k) => s + Number(po[k] || 0), 0);
+  return {
+    sale: saleAmountOf(po),
+    naver_discount: Math.max(0, Number(po.productDiscountAmount || 0) - Number(po.sellerBurdenDiscountAmount || 0)),
+    commission,
+    expected_settlement: po.expectedSettlementAmount !== undefined ? Number(po.expectedSettlementAmount) : null,
+  };
+}
+
 function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEvent = () => {} }) {
   const getState = (k) => db.prepare('SELECT value FROM sync_state WHERE key = ?').get(k)?.value ?? null;
   const setState = (k, v) => db.prepare('INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(k, v);
@@ -75,7 +100,6 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
     const addr = po.shippingAddress || {};
     const { spec, missing } = parseSpec(po.productOption, po.shippingMemo);
     const existing = getRow(po.productOrderId);
-    const payment = Number(po.totalPaymentAmount ?? 0);
     const deliveryFee = Number(po.deliveryFeeAmount ?? 0);
     const params = {
       product_order_id: po.productOrderId,
@@ -89,7 +113,7 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
       parsed_spec: JSON.stringify(spec),
       parse_missing: JSON.stringify(missing),
       orderer_name: od.ordererName ?? null,
-      payment_amount: payment - deliveryFee,
+      payment_amount: saleAmountOf(po),
       delivery_fee: deliveryFee,
       quantity: Number(po.quantity ?? 1),
       paid_at: od.paymentDate ?? null,
@@ -177,6 +201,7 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
     const merged = mergeAddons();
     review = Math.max(0, review - merged);
     fixPieceCounts();
+    fixSaleAmounts();
     if (imported || review) onEvent('paid', { imported, review });
     return { fetched: list.length, new: newIds.length, imported, review, merged };
   }
@@ -236,6 +261,47 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
         .run(pieces, q.quote.area_sqm, q.quote.billed_area_sqm, q.quote.factory_cost, unitPrice, o.id);
       orders.systemNote(db, o.id, `수량 바로잡음: 네이버 수량 ${r.naver_qty}은(는) 면적 단위라 블라인드 ${pieces}장으로 고침 (${o.quantity}장 → ${pieces}장, 제작원가 다시 계산)`);
     }
+  }
+
+  /**
+   * 매출 = 블라인드 판매 금액 + 합산된 추가상품 판매 금액 (네이버가 준 원본 항목으로 매번 다시 계산).
+   * 예전에 고객 결제금액(네이버 쿠폰 차감 후)으로 받아 둔 주문도 여기서 바로잡힌다. 취소된 주문은 건드리지 않는다.
+   */
+  function fixSaleAmounts() {
+    const rows = db.prepare(
+      `SELECT s.product_order_id, s.raw, s.order_id FROM smartstore_orders s JOIN orders o ON o.id = s.order_id
+       WHERE s.import_status = 'imported' AND o.source = 'smartstore' AND o.status != 'cancelled'`
+    ).all();
+    const setRowAmount = db.prepare('UPDATE smartstore_orders SET payment_amount = ? WHERE product_order_id = ?');
+    for (const r of rows) {
+      const parts = [{ pid: r.product_order_id, raw: r.raw }, ...db.prepare("SELECT product_order_id AS pid, raw FROM smartstore_orders WHERE merged_into = ? AND import_status = 'merged'").all(r.product_order_id)];
+      let sale = 0;
+      for (const p of parts) {
+        const amount = saleAmountOf(JSON.parse(p.raw || '{}').productOrder || {});
+        setRowAmount.run(amount, p.pid);
+        sale += amount;
+      }
+      const o = orders.getOrderRow(db, r.order_id);
+      if (!o || o.product_amount === sale) continue;
+      const unitPrice = o.billed_area_sqm * o.quantity > 0 ? Math.round(sale / (o.billed_area_sqm * o.quantity)) : 0;
+      db.prepare("UPDATE orders SET product_amount = ?, total_amount = ? + shipping_fee, unit_price = ?, updated_at = datetime('now','localtime') WHERE id = ?").run(sale, sale, unitPrice, o.id);
+      orders.systemNote(db, o.id, `매출 바로잡음: ${o.product_amount.toLocaleString('ko-KR')}원 → ${sale.toLocaleString('ko-KR')}원 (고객 결제액이 아니라 정가 − 판매자 부담 할인 기준. 네이버가 부담한 쿠폰은 매출에서 빼지 않음)`);
+    }
+  }
+
+  /** 주문 화면용: 이 블라인드 주문(추가상품 포함)의 네이버 정산 요약 */
+  function settlementFor(mainPid) {
+    const raws = [getRow(mainPid), ...addonIds(mainPid).map(getRow)].filter(Boolean).map((r) => JSON.parse(r.raw || '{}').productOrder || {});
+    const sum = { sale: 0, naver_discount: 0, commission: 0, expected_settlement: 0 };
+    for (const po of raws) {
+      const s = settlementOf(po);
+      sum.sale += s.sale;
+      sum.naver_discount += s.naver_discount;
+      sum.commission += s.commission;
+      if (s.expected_settlement === null) sum.expected_settlement = null;
+      else if (sum.expected_settlement !== null) sum.expected_settlement += s.expected_settlement;
+    }
+    return sum;
   }
 
   async function pullCancels() {
@@ -467,7 +533,7 @@ function createSync({ db, client, mode, pollMinutes = 5, logger = console, onEve
   }
 
   return {
-    enabled, pull, status, listRows, logs, tryImport, ignore, confirmOrder, dispatchOrder, approveCancel, getRow, getRowByOrder, start, stop,
+    enabled, pull, status, listRows, logs, tryImport, ignore, confirmOrder, dispatchOrder, approveCancel, getRow, getRowByOrder, settlementFor, start, stop,
   };
 }
 

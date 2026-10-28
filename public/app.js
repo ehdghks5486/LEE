@@ -140,6 +140,9 @@
           <dt>네이버 상태</dt><dd>${esc(ssInfo.naver_status || '-')}${ssInfo.claim_status ? ` · <span class="chip on_hold">${esc(ssInfo.claim_status)}</span>` : ''}</dd>
           <dt>발주확인</dt><dd>${ssInfo.confirmed_at ? `전송됨 (${dt(ssInfo.confirmed_at)})` : '<span class="muted">미전송 (승인 시 자동)</span>'}</dd>
           <dt>발송처리</dt><dd>${ssInfo.dispatch_synced ? '전송됨' : ssInfo.dispatch_error ? `<span class="error">실패: ${esc(ssInfo.dispatch_error)}</span>` : '<span class="muted">출고 시 자동</span>'}</dd>
+          ${ssInfo.settlement ? `<dt>판매 금액</dt><dd>${won(ssInfo.settlement.sale)}${ssInfo.settlement.naver_discount ? ` <span class="muted">(네이버 부담 할인 ${won(ssInfo.settlement.naver_discount)}은 매출에서 빼지 않음)</span>` : ''}</dd>
+          ${ssInfo.settlement.expected_settlement !== null ? `<dt>네이버 정산 예정</dt><dd><strong>${won(ssInfo.settlement.expected_settlement)}</strong> <span class="muted">(수수료 ${won(ssInfo.settlement.commission)})</span></dd>
+          <dt>정산 기준 마진</dt><dd>${won(ssInfo.settlement.expected_settlement - o.factory_cost)} <span class="muted">(정산 예정 − 제작원가)</span></dd>` : ''}` : ''}
         </dl>
         ${ssInfo.dispatch_error && !ssInfo.dispatch_synced ? `<div class="actions"><button class="btn sm" id="dispatchRetry">발송처리 재전송</button></div>` : ''}
       </div>` : ''}
