@@ -1,8 +1,12 @@
 /* BLACKOUT 주문관리 PWA 서비스워커
    - 앱 셸(정적 파일)은 캐시 우선
    - API 요청은 항상 네트워크 (주문 데이터는 캐시하지 않음) */
-const CACHE = 'blackout-shell-v3';
-const SHELL = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest', '/icons/logo-white.png', '/icons/logo-dark.png', '/icons/favicon-64.png'];
+const CACHE = 'blackout-shell-v4';
+const SHELL = [
+  '/', '/index.html', '/core.js', '/app.js', '/styles.css', '/manifest.webmanifest',
+  '/vendor/', '/vendor/index.html', '/vendor.js', '/vendor/manifest.webmanifest',
+  '/icons/logo-white.png', '/icons/logo-dark.png', '/icons/favicon-64.png',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -30,7 +34,7 @@ self.addEventListener('fetch', (event) => {
         }
         return res;
       })
-      .catch(() => caches.match(req).then((hit) => hit || caches.match('/index.html')))
+      .catch(() => caches.match(req).then((hit) => hit || caches.match(url.pathname.startsWith('/vendor') ? '/vendor/index.html' : '/index.html')))
   );
 });
 

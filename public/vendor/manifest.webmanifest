@@ -1,0 +1,18 @@
+{
+  "name": "BLACKOUT 업체 주문",
+  "short_name": "BLACKOUT 주문",
+  "description": "BLACKOUT 시공업체 주문 앱 - 주문 접수 · 자동 견적 · 진행 조회",
+  "id": "/vendor/",
+  "start_url": "/vendor/",
+  "scope": "/vendor/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "lang": "ko",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

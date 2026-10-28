@@ -126,7 +126,8 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
   const push = createPush({ db, sendImpl: pushSend });
   const won = (n) => `${Number(n || 0).toLocaleString('ko-KR')}원`;
   const specOf = (o) => `${o.product_type_name || o.product_type} ${o.width_mm}×${o.height_mm}mm${o.quantity > 1 ? ` ×${o.quantity}` : ''}`;
-  const orderUrl = (o) => `/#/orders/${o.id}`;
+  // 알림을 누르면 열 화면: 업체는 업체 앱(/vendor/)으로
+  const orderUrl = (o, role) => `${role === 'vendor' ? '/vendor/' : '/'}#/orders/${o.id}`;
   const notifyEvent = {
     created(o, user) {
       if (user.role !== 'vendor') return;
@@ -135,17 +136,17 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
     status(o, from, to, user) {
       if (to === 'approved') {
         push.notify(['factory'], { title: '새 제작 주문서', body: `${o.order_no} · ${specOf(o)}`, url: orderUrl(o), tag: `order-${o.id}` });
-        if (o.vendor_id) push.notify(['vendor'], { title: '발주 승인', body: `${o.order_no} 제작에 들어갑니다.`, url: orderUrl(o), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
+        if (o.vendor_id) push.notify(['vendor'], { title: '발주 승인', body: `${o.order_no} 제작에 들어갑니다.`, url: orderUrl(o, 'vendor'), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
       }
       if (to === 'shipped' && o.vendor_id) {
-        push.notify(['vendor'], { title: '출고되었습니다', body: `${o.order_no} · ${o.tracking_carrier} ${o.tracking_no || '(송장번호 등록 중)'}`, url: orderUrl(o), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
+        push.notify(['vendor'], { title: '출고되었습니다', body: `${o.order_no} · ${o.tracking_carrier} ${o.tracking_no || '(송장번호 등록 중)'}`, url: orderUrl(o, 'vendor'), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
       }
       if (to === 'cancelled' && user.role === 'vendor') {
         push.notify(['admin'], { title: `업체 주문 취소 · ${o.vendor_name || ''}`, body: o.order_no, url: orderUrl(o), tag: `order-${o.id}` });
       }
     },
     trackingFound(o) {
-      if (o.vendor_id) push.notify(['vendor'], { title: '송장번호 등록', body: `${o.order_no} · ${o.tracking_carrier} ${o.tracking_no}`, url: orderUrl(o), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
+      if (o.vendor_id) push.notify(['vendor'], { title: '송장번호 등록', body: `${o.order_no} · ${o.tracking_carrier} ${o.tracking_no}`, url: orderUrl(o, 'vendor'), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
     },
     trackingAttention(o, kind, n) {
       const body = kind === 'multiple' ? `${o.order_no} · 대신택배 송장 후보 ${n}건, 맞는 것을 골라 주세요.` : `${o.order_no} · 대신택배에서 송장을 찾지 못했습니다. 직접 입력해 주세요.`;
@@ -608,7 +609,8 @@ function serveStatic(req, res, pathname) {
     res.writeHead(405);
     return res.end();
   }
-  let rel = pathname === '/' ? '/index.html' : pathname;
+  if (pathname === '/vendor') { res.writeHead(302, { Location: '/vendor/' }); return res.end(); } // 업체 앱은 /vendor/ (별도 홈 화면 앱)
+  let rel = pathname.endsWith('/') ? `${pathname}index.html` : pathname;
   const filePath = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -616,8 +618,8 @@ function serveStatic(req, res, pathname) {
   }
   fs.stat(filePath, (err, st) => {
     if (err || !st.isFile()) {
-      // SPA fallback
-      if (!path.extname(rel)) return sendFile(res, path.join(PUBLIC_DIR, 'index.html'), '.html');
+      // SPA fallback (업체 앱 경로는 업체 앱 화면으로)
+      if (!path.extname(rel)) return sendFile(res, path.join(PUBLIC_DIR, pathname.startsWith('/vendor/') ? 'vendor/index.html' : 'index.html'), '.html');
       res.writeHead(404);
       return res.end('Not found');
     }
