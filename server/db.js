@@ -154,6 +154,33 @@ CREATE TABLE IF NOT EXISTS sync_state (
   value TEXT
 );
 
+-- 장부: 이전 「블랙아웃」 앱에서 옮겨 온 주문 장부 (그 앱 필드 그대로, 치수는 cm)
+CREATE TABLE IF NOT EXISTS ledger_entries (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  channel TEXT,
+  paid INTEGER NOT NULL DEFAULT 0,
+  name TEXT,
+  phone TEXT,
+  address TEXT,
+  width_cm REAL,
+  height_cm REAL,
+  frame TEXT,
+  fabric TEXT,
+  open_type TEXT,
+  kind TEXT,
+  price INTEGER NOT NULL DEFAULT 0,
+  cost INTEGER NOT NULL DEFAULT 0,
+  ship INTEGER NOT NULL DEFAULT 0,
+  fee INTEGER NOT NULL DEFAULT 0,
+  memo TEXT,
+  source TEXT NOT NULL DEFAULT 'blackout-app',
+  raw TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_date ON ledger_entries(date);
+
 -- 휴대폰 알림 구독 (기기마다 1행)
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

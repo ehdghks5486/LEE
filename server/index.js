@@ -14,6 +14,7 @@ const { NaverCommerceClient } = require('./smartstore/client');
 const { createTrackingLookup } = require('./tracking-lookup');
 const daesin = require('./carriers/daesin');
 const { createPush } = require('./push');
+const ledger = require('./ledger');
 
 const { HttpError, STATUSES } = orders;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -553,6 +554,30 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
     json(ctx.res, 200, orders.stats(db, { from: ctx.query.from, to: ctx.query.to }));
   });
 
+  // ----- admin: 장부 (이전 블랙아웃 앱에서 옮긴 기록) -----
+  router.add('GET', '/api/ledger', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    json(ctx.res, 200, ledger.listLedger(db, { month: ctx.query.month, unpaid: ctx.query.unpaid === '1' }));
+  });
+  router.add('PATCH', '/api/ledger/:id', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    if (!ledger.setPaid(db, ctx.params.id, !!ctx.body.paid)) throw new HttpError(404, '장부 기록을 찾을 수 없습니다.');
+    json(ctx.res, 200, { ok: true });
+  });
+  router.add('POST', '/api/ledger/import-key', async (ctx) => {
+    requireRole(ctx.user, 'admin');
+    json(ctx.res, 200, ledger.createImportKey());
+  });
+  // 이전 앱 화면에서 직접 보내는 옮기기: 로그인 대신 일회용 키(10분, 한 번만)로 확인한다
+  router.add('POST', '/api/ledger/import', async (ctx) => {
+    if (!ledger.useImportKey(ctx.query.key)) throw new HttpError(403, '옮기기 키가 없거나 만료됐습니다. 관리 앱에서 새로 받으세요.');
+    try {
+      json(ctx.res, 200, { imported: ledger.importEntries(db, ctx.body.entries) });
+    } catch (e) {
+      throw e instanceof HttpError ? e : new HttpError(e.status || 400, e.message);
+    }
+  });
+
   router.add('GET', '/api/health', async (ctx) => json(ctx.res, 200, { ok: true, time: new Date().toISOString() }));
 
   // ----- request handling -----
@@ -572,8 +597,10 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
         let body = {};
         if (!['GET', 'HEAD'].includes(req.method)) {
           const ct = String(req.headers['content-type'] || '');
-          if (!ct.includes('application/json')) throw new HttpError(415, 'application/json 요청만 허용됩니다.');
-          body = await readBody(req);
+          // 장부 옮기기만 예외: 다른 주소(이전 앱)에서 보내므로 text/plain 으로 온다. 대신 일회용 키가 있어야 한다.
+          const isLedgerImport = req.method === 'POST' && pathname === '/api/ledger/import';
+          if (!ct.includes('application/json') && !(isLedgerImport && ct.startsWith('text/plain'))) throw new HttpError(415, 'application/json 요청만 허용됩니다.');
+          body = await readBody(req, isLedgerImport ? 2 * 1024 * 1024 : undefined);
           if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new HttpError(400, 'JSON 객체가 필요합니다.');
         }
         const query = Object.fromEntries(url.searchParams.entries());

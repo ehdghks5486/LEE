@@ -7,7 +7,7 @@
   } = window.BO;
 
   const NAV = {
-    admin: [['/orders', '주문관리'], ['/smartstore', '스마트스토어'], ['/stats', '매출·마진'], ['/vendors', '업체관리'], ['/users', '계정관리'], ['/settings', '가격설정']],
+    admin: [['/orders', '주문관리'], ['/smartstore', '스마트스토어'], ['/ledger', '장부'], ['/stats', '매출·마진'], ['/vendors', '업체관리'], ['/users', '계정관리'], ['/settings', '가격설정']],
     factory: [['/orders', '제작 주문서']],
   };
 
@@ -631,6 +631,53 @@
     });
   }
 
+  // ---------- admin: 장부 (이전 블랙아웃 앱 기록) ----------
+  async function viewLedger(main, r) {
+    const month = r.query.month || '';
+    const unpaid = r.query.unpaid === '1';
+    main.classList.add('wide');
+    main.innerHTML = '<h1>장부</h1><div id="ledgerBody"><div class="empty">불러오는 중…</div></div>';
+    let data;
+    try { data = await api('GET', `/api/ledger?${new URLSearchParams({ month, unpaid: unpaid ? '1' : '' })}`); }
+    catch (err) { document.getElementById('ledgerBody').innerHTML = `<div class="error">${esc(err.message)}</div>`; return; }
+    const t = data.totals;
+    const cm = (v) => (v ? String(+(+v).toFixed(1)) : '?');
+    document.getElementById('ledgerBody').innerHTML = `
+      <p class="small muted">이전 「블랙아웃」 앱에서 옮겨 온 주문 장부입니다. 차익 = 판매가 − 공장가 − 배송비 − 수수료. 새 주문은 「주문관리」·「매출·마진」에서 봅니다.</p>
+      <div class="filters">
+        <select id="lMonth"><option value="all" ${data.month === 'all' ? 'selected' : ''}>전체 기간</option>${data.months.map((m) => `<option value="${m}" ${m === data.month ? 'selected' : ''}>${m.slice(0, 4)}년 ${+m.slice(5)}월</option>`).join('')}</select>
+        <button class="btn sm ${unpaid ? 'primary' : ''}" id="lUnpaid">미입금만</button>
+      </div>
+      <div class="tiles" style="margin:10px 0">
+        <div class="tile"><div class="k">주문</div><div class="v">${num(t.count)}건</div></div>
+        <div class="tile"><div class="k">매출</div><div class="v">${won(t.sales)}</div></div>
+        <div class="tile"><div class="k">차익</div><div class="v">${won(t.profit)}</div></div>
+        <div class="tile"><div class="k">미입금</div><div class="v">${num(t.unpaid_count)}건${t.unpaid_count ? ` · ${won(t.unpaid_amount)}` : ''}</div></div>
+      </div>
+      ${data.rows.length ? data.rows.map((e) => `
+        <div class="card">
+          <div class="row between">
+            <span><span class="muted small">${esc(e.date)}</span> <strong>${esc(e.name || '(이름 없음)')}</strong> <span class="chip">${esc(e.channel || '-')}</span></span>
+            <button class="btn sm ${e.paid ? 'ok' : 'danger'}" data-paid="${esc(e.id)}" data-v="${e.paid ? 0 : 1}">${e.paid ? '입금 O' : '입금 X'}</button>
+          </div>
+          <div class="spec">${cm(e.width_cm)} × ${cm(e.height_cm)} cm · 프레임 ${esc(e.frame || '-')} / 원단 ${esc(e.fabric || '-')} · ${esc(e.open_type || '-')}${e.kind === '프리' ? ' · 프리' : ''}</div>
+          <div class="row between small" style="margin-top:6px">
+            <span class="muted">판매 ${won(e.price)} · 공장 ${won(e.cost)} · 배송 ${won(e.ship)}${e.fee ? ` · 수수료 ${won(e.fee)}` : ''}</span>
+            <strong class="${e.profit < 0 ? 'error' : ''}">차익 ${won(e.profit)}</strong>
+          </div>
+          ${e.phone || e.address ? `<div class="small muted">${esc(e.phone || '')}${e.phone && e.address ? ' · ' : ''}${esc(e.address || '')}</div>` : ''}
+          ${e.memo ? `<div class="small">${esc(e.memo)}</div>` : ''}
+        </div>`).join('') : `<div class="empty">${unpaid ? '미입금 기록이 없습니다.' : '장부 기록이 없습니다.'}</div>`}`;
+    const goWith = (q) => go(`/ledger?${new URLSearchParams({ month: data.month, unpaid: unpaid ? '1' : '', ...q })}`);
+    document.getElementById('lMonth').onchange = (e) => goWith({ month: e.target.value });
+    document.getElementById('lUnpaid').onclick = () => goWith({ unpaid: unpaid ? '' : '1' });
+    main.querySelectorAll('[data-paid]').forEach((b) => (b.onclick = async () => {
+      busy(b, true);
+      try { await api('PATCH', `/api/ledger/${encodeURIComponent(b.dataset.paid)}`, { paid: b.dataset.v === '1' }); render(); }
+      catch (err) { toast(err.message, true); busy(b, false); }
+    }));
+  }
+
   window.BO.register({
     roles: ['admin', 'factory'],
     nav: NAV,
@@ -638,6 +685,7 @@
       if (p[0] === 'orders' && p[1] === 'new' && role === 'admin') return viewNewOrder(main, r);
       if (p[0] === 'orders' && p[1]) return viewOrderDetail(main, Number(p[1]));
       if (role === 'admin' && p[0] === 'stats') return viewStats(main, r);
+      if (role === 'admin' && p[0] === 'ledger') return viewLedger(main, r);
       if (role === 'admin' && p[0] === 'vendors') return viewVendors(main);
       if (role === 'admin' && p[0] === 'users') return viewUsers(main);
       if (role === 'admin' && p[0] === 'settings') return viewSettings(main);
