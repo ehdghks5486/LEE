@@ -118,9 +118,27 @@ function resolveSmartstore(opt = {}) {
   return { mode: 'off', client: null };
 }
 
+/**
+ * 한 번만: 이전 블랙아웃 앱 가격 규칙(1㎡ 미만 고정가·0.1㎡ 반올림)으로 공장가를 다시 계산하고,
+ * 이미 들어온 스마트스토어 주문에 우리 부담 택배비를 채운다. 취소된 주문은 그대로 둔다.
+ */
+function repriceOnce(db) {
+  const KEY = 'reprice_old_app_rules';
+  if (db.prepare('SELECT 1 FROM sync_state WHERE key = ?').get(KEY)) return;
+  const delivery = Number(getSettings(db).smartstore_delivery_cost) || 0;
+  const rows = db.prepare("SELECT * FROM orders WHERE status <> 'cancelled'").all();
+  const upd = db.prepare('UPDATE orders SET factory_cost = ?, delivery_cost = ? WHERE id = ?');
+  for (const o of rows) {
+    const q = orders.quoteFor(db, o, null);
+    upd.run(q.ok ? q.quote.factory_cost : o.factory_cost, o.source === 'smartstore' && !o.delivery_cost ? delivery : o.delivery_cost, o.id);
+  }
+  db.prepare('INSERT INTO sync_state (key, value) VALUES (?, ?)').run(KEY, new Date().toISOString());
+}
+
 function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart = false, trackingSearch = daesin.searchByReceiverPhone, trackingDelayMs, pushSend } = {}) {
   const db = openDatabase(dbPath || process.env.DB_PATH || path.join(__dirname, '..', 'data', 'blackout.db'));
   auth.purgeExpired(db);
+  repriceOnce(db);
   const router = createRouter();
 
   // ----- 휴대폰 알림: 누구에게 무엇을 (공장 알림에는 가격·업체명을 넣지 않는다) -----
@@ -504,7 +522,8 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
   });
   router.add('PUT', '/api/settings', async (ctx) => {
     requireRole(ctx.user, 'admin');
-    const numericKeys = ['default_unit_price_per_sqm', 'min_billable_area_sqm', 'shipping_fee', 'factory_cost_per_sqm', 'min_size_mm', 'max_size_mm', 'smartstore_qty_unit_sqm'];
+    const numericKeys = ['default_unit_price_per_sqm', 'min_billable_area_sqm', 'shipping_fee', 'factory_cost_per_sqm', 'min_size_mm', 'max_size_mm', 'smartstore_qty_unit_sqm',
+      'factory_small_area_sqm', 'factory_small_price', 'factory_area_step_sqm', 'smartstore_delivery_cost'];
     const known = new Set(['company_name', 'default_carrier', ...numericKeys]);
     if (ctx.body.settings?.default_carrier !== undefined && !CARRIERS.includes(String(ctx.body.settings.default_carrier))) {
       throw new HttpError(400, '기본 택배사를 목록에서 골라 주세요.');

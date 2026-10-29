@@ -43,7 +43,7 @@ const FACTORY_FIELDS = [
   'approved_at', 'production_started_at', 'shipped_at', 'delivered_at', 'source',
 ];
 
-const VENDOR_HIDDEN = new Set(['factory_cost', 'admin_memo', 'created_by']);
+const VENDOR_HIDDEN = new Set(['factory_cost', 'delivery_cost', 'admin_memo', 'created_by']);
 
 // 외부 연동 훅 (스마트스토어·알림 등). beforeApprove 는 throw 로 승인을 막을 수 있고, 나머지는 실패해도 처리를 막지 않음.
 const hooks = { beforeApprove: null, afterShipped: null, afterCancelled: null, afterCreated: null, afterStatus: null };
@@ -297,13 +297,13 @@ function insertOrder(db, f, actor, note) {
     const info = db
       .prepare(
         `INSERT INTO orders (order_no, source, external_ref, vendor_id, product_type, width_mm, height_mm, frame_color, fabric_color, quantity,
-           area_sqm, billed_area_sqm, unit_price, product_amount, surcharge, shipping_fee, total_amount, factory_cost,
+           area_sqm, billed_area_sqm, unit_price, product_amount, surcharge, shipping_fee, total_amount, factory_cost, delivery_cost,
            recipient_name, recipient_phone, zip_code, address, address_detail, install_note, admin_memo, status, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', ?)`
       )
       .run(
         order_no, f.source, f.external_ref ?? null, f.vendor_id ?? null, q.product_type, q.width_mm, q.height_mm, q.frame_color, q.fabric_color, q.quantity,
-        q.area_sqm, q.billed_area_sqm, q.unit_price, q.product_amount, q.surcharge, q.shipping_fee, q.total_amount, q.factory_cost,
+        q.area_sqm, q.billed_area_sqm, q.unit_price, q.product_amount, q.surcharge, q.shipping_fee, q.total_amount, q.factory_cost, f.delivery_cost || 0,
         f.recipient_name, f.recipient_phone, f.zip_code ?? null, f.address, f.address_detail ?? null, f.install_note ?? null, f.admin_memo ?? null, f.created_by ?? null
       );
     orderId = Number(info.lastInsertRowid);
@@ -334,7 +334,7 @@ function createSmartstoreOrder(db, { spec, recipient, amounts, external_ref, ins
   q.total_amount = productAmount + shippingFee;
   q.unit_price = q.billed_area_sqm * q.quantity > 0 ? Math.round(productAmount / (q.billed_area_sqm * q.quantity)) : 0;
   const orderId = insertOrder(db, {
-    source: 'smartstore', external_ref, vendor_id: null, quote: q,
+    source: 'smartstore', external_ref, vendor_id: null, quote: q, delivery_cost: Number(getSettings(db).smartstore_delivery_cost) || 0,
     recipient_name: recipient.name, recipient_phone: recipient.phone, zip_code: recipient.zip_code ?? null,
     address: recipient.address, address_detail: recipient.address_detail ?? null, install_note: install_note ?? null,
     admin_memo: admin_memo ?? null, created_by: actor && actor.id ? actor.id : null,
@@ -548,8 +548,8 @@ function stats(db, { from, to } = {}) {
   const totals = db
     .prepare(
       `SELECT COUNT(*) AS orders, COALESCE(SUM(product_amount + surcharge),0) AS revenue,
-              COALESCE(SUM(shipping_fee),0) AS shipping, COALESCE(SUM(factory_cost),0) AS factory_cost,
-              COALESCE(SUM(product_amount + surcharge - factory_cost),0) AS margin,
+              COALESCE(SUM(shipping_fee),0) AS shipping, COALESCE(SUM(factory_cost),0) AS factory_cost, COALESCE(SUM(delivery_cost),0) AS delivery_cost,
+              COALESCE(SUM(product_amount + surcharge - factory_cost - delivery_cost),0) AS margin,
               COALESCE(SUM(billed_area_sqm * quantity),0) AS billed_area
        FROM orders o ${w}`
     )
@@ -558,7 +558,7 @@ function stats(db, { from, to } = {}) {
     .prepare(
       `SELECT substr(o.created_at,1,7) AS month, COUNT(*) AS orders,
               SUM(product_amount + surcharge) AS revenue, SUM(factory_cost) AS factory_cost,
-              SUM(product_amount + surcharge - factory_cost) AS margin
+              SUM(product_amount + surcharge - factory_cost - delivery_cost) AS margin
        FROM orders o ${w} GROUP BY month ORDER BY month DESC LIMIT 24`
     )
     .all(...params);
@@ -566,7 +566,7 @@ function stats(db, { from, to } = {}) {
     .prepare(
       `SELECT o.vendor_id, COALESCE(v.name,'(미지정)') AS vendor_name, COUNT(*) AS orders,
               SUM(product_amount + surcharge) AS revenue, SUM(factory_cost) AS factory_cost,
-              SUM(product_amount + surcharge - factory_cost) AS margin
+              SUM(product_amount + surcharge - factory_cost - delivery_cost) AS margin
        FROM orders o LEFT JOIN vendors v ON v.id = o.vendor_id ${w}
        GROUP BY o.vendor_id ORDER BY revenue DESC`
     )
@@ -574,7 +574,7 @@ function stats(db, { from, to } = {}) {
   const bySource = db
     .prepare(
       `SELECT o.source, COUNT(*) AS orders, SUM(product_amount + surcharge) AS revenue, SUM(factory_cost) AS factory_cost,
-              SUM(product_amount + surcharge - factory_cost) AS margin
+              SUM(product_amount + surcharge - factory_cost - delivery_cost) AS margin
        FROM orders o ${w} GROUP BY o.source ORDER BY o.source`
     )
     .all(...params);

@@ -215,13 +215,17 @@ const DEFAULT_SETTINGS = [
   ['min_size_mm', '300', '최소 제작 치수 (mm)'],
   ['max_size_mm', '3000', '최대 제작 치수 (mm)'],
   ['default_carrier', '대신택배', '기본 택배사 (공장 출고 시 처음 선택)'],
+  ['factory_small_area_sqm', '1', '이 면적(㎡) 미만은 공장가 고정'],
+  ['factory_small_price', '110000', '작은 블라인드 공장가 (원/장, 부가세 포함)'],
+  ['factory_area_step_sqm', '0.1', '공장 면적 반올림 단위 (㎡)'],
+  ['smartstore_delivery_cost', '9680', '스마트스토어 주문 택배비 (원, 우리 부담 → 마진에서 뺌)'],
   ['smartstore_qty_unit_sqm', '0.1', '스마트스토어 수량 1개 = 몇 ㎡ (면적 단위 판매. 0이면 수량 = 장수)'],
 ];
 
 const DEFAULT_PRODUCT_TYPES = [
   ['single', '편개형', 0, 0, 1],
-  ['double', '양개형', 50000, 10000, 2],
-  ['free', '프리형', 50000, 15000, 3],
+  ['double', '양개형', 50000, 44000, 2],
+  ['free', '프리형', 50000, 44000, 3],
 ];
 
 function openDatabase(dbPath) {
@@ -236,6 +240,7 @@ function openDatabase(dbPath) {
     if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   };
   addColumn('smartstore_orders', 'merged_into', 'TEXT'); // 추가상품이 합산된 블라인드 상품주문번호
+  addColumn('orders', 'delivery_cost', 'INTEGER NOT NULL DEFAULT 0'); // 우리가 내는 택배비 (스마트스토어 주문)
   seed(db);
   return db;
 }

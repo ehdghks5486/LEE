@@ -115,7 +115,7 @@
           ${o.surcharge ? `<dt>유형 추가금</dt><dd>${won(o.surcharge)}</dd>` : ''}
           <dt>택배비</dt><dd>${won(o.shipping_fee)}</dd>
           <dt>최종 금액</dt><dd><strong>${won(o.total_amount)}</strong></dd>
-          ${role === 'admin' ? `<dt>제작원가 / 마진</dt><dd>${won(o.factory_cost)} / <strong>${won(o.product_amount + o.surcharge - o.factory_cost)}</strong></dd>` : ''}
+          ${role === 'admin' ? `<dt>제작원가 / 마진</dt><dd>${won(o.factory_cost)}${o.delivery_cost ? ` + 택배 ${won(o.delivery_cost)}` : ''} / <strong>${won(o.product_amount + o.surcharge - o.factory_cost - (o.delivery_cost || 0))}</strong></dd>` : ''}
         </dl>
       </div>` : ''}
 
@@ -142,7 +142,7 @@
           <dt>발송처리</dt><dd>${ssInfo.dispatch_synced ? '전송됨' : ssInfo.dispatch_error ? `<span class="error">실패: ${esc(ssInfo.dispatch_error)}</span>` : '<span class="muted">출고 시 자동</span>'}</dd>
           ${ssInfo.settlement ? `<dt>판매 금액</dt><dd>${won(ssInfo.settlement.sale)}${ssInfo.settlement.naver_discount ? ` <span class="muted">(네이버 부담 할인 ${won(ssInfo.settlement.naver_discount)}은 매출에서 빼지 않음)</span>` : ''}</dd>
           ${ssInfo.settlement.expected_settlement !== null ? `<dt>네이버 정산 예정</dt><dd><strong>${won(ssInfo.settlement.expected_settlement)}</strong> <span class="muted">(수수료 ${won(ssInfo.settlement.commission)})</span></dd>
-          <dt>정산 기준 마진</dt><dd>${won(ssInfo.settlement.expected_settlement - o.factory_cost)} <span class="muted">(정산 예정 − 제작원가)</span></dd>` : ''}` : ''}
+          <dt>정산 기준 마진</dt><dd>${won(ssInfo.settlement.expected_settlement - o.factory_cost - (o.delivery_cost || 0))} <span class="muted">(정산 예정 − 제작원가 − 택배)</span></dd>` : ''}` : ''}
         </dl>
         ${ssInfo.dispatch_error && !ssInfo.dispatch_synced ? `<div class="actions"><button class="btn sm" id="dispatchRetry">발송처리 재전송</button></div>` : ''}
       </div>` : ''}

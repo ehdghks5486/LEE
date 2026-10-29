@@ -60,7 +60,7 @@ function computeQuote(input, { settings, productTypes, vendor }) {
   const productAmount = productAmountEach * quantity;
   const surcharge = surchargeEach * quantity;
   const totalAmount = productAmount + surcharge + shippingFee;
-  const factoryCost = (Math.round(billedAreaSqm * factoryCostPerSqm) + (Number(type.factory_surcharge) || 0)) * quantity;
+  const factoryCost = (factoryBaseCost(areaSqm, minArea, factoryCostPerSqm, settings) + (Number(type.factory_surcharge) || 0)) * quantity;
 
   return {
     ok: true,
@@ -84,6 +84,18 @@ function computeQuote(input, { settings, productTypes, vendor }) {
       factory_cost: factoryCost,
     },
   };
+}
+
+/**
+ * 한 장 공장가 (이전 블랙아웃 앱 규칙 그대로):
+ * 1㎡ 미만은 고정가, 그 밖에는 면적을 0.1㎡ 로 반올림한 뒤 최소면적 적용, 100원 단위 반올림.
+ */
+function factoryBaseCost(areaSqm, minArea, perSqm, settings) {
+  const smallArea = Number(settings.factory_small_area_sqm) || 0;
+  if (areaSqm < smallArea) return Number(settings.factory_small_price) || 0;
+  const step = Number(settings.factory_area_step_sqm) || 0;
+  const stepped = step ? round4(Math.round(Number((areaSqm / step).toFixed(6))) * step) : areaSqm;
+  return Math.round((Math.max(stepped, minArea) * perSqm) / 100) * 100;
 }
 
 function round4(n) {
