@@ -17,8 +17,9 @@ const TRANSITIONS = {
   admin: {
     received: ['approved', 'on_hold', 'cancelled'],
     on_hold: ['approved', 'received', 'cancelled'],
-    approved: ['on_hold', 'cancelled'],
-    in_production: [],
+    // 공장이 앱을 안 쓰고 직접 발주·출고한 경우 관리자가 대신 처리
+    approved: ['in_production', 'shipped', 'on_hold', 'cancelled'],
+    in_production: ['shipped'],
     shipped: ['delivered'],
     delivered: [],
     cancelled: [],
