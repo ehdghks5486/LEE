@@ -651,7 +651,7 @@
     const t = data.totals;
     const cm = (v) => (v ? String(+(+v).toFixed(1)) : '?');
     document.getElementById('ledgerBody').innerHTML = `
-      <p class="small muted">이전 「블랙아웃」 앱에서 옮겨 온 주문 장부입니다. 차익 = 판매가 − 공장가 − 배송비 − 수수료. 새 주문은 「주문관리」·「매출·마진」에서 봅니다.</p>
+      <p class="small muted">이전 「블랙아웃」 앱 기록과 이 앱의 주문(취소 제외)을 함께 봅니다. 차익 = 판매가 − 공장가 − 배송비 − 수수료. 주문번호가 붙은 줄은 누르면 주문 화면이 열립니다.</p>
       <div class="filters">
         <select id="lMonth"><option value="all" ${data.month === 'all' ? 'selected' : ''}>전체 기간</option>${data.months.map((m) => `<option value="${m}" ${m === data.month ? 'selected' : ''}>${m.slice(0, 4)}년 ${+m.slice(5)}월</option>`).join('')}</select>
         <button class="btn sm ${unpaid ? 'primary' : ''}" id="lUnpaid">미입금만</button>
@@ -665,8 +665,10 @@
       ${data.rows.length ? data.rows.map((e) => `
         <div class="card">
           <div class="row between">
-            <span><span class="muted small">${esc(e.date)}</span> <strong>${esc(e.name || '(이름 없음)')}</strong> <span class="chip">${esc(e.channel || '-')}</span></span>
-            <button class="btn sm ${e.paid ? 'ok' : 'danger'}" data-paid="${esc(e.id)}" data-v="${e.paid ? 0 : 1}">${e.paid ? '입금 O' : '입금 X'}</button>
+            <span><span class="muted small">${esc(e.date)}</span> <strong>${esc(e.name || '(이름 없음)')}</strong> <span class="chip">${esc(e.channel || '-')}</span>${e.order_id ? ` <a class="small" href="#/orders/${e.order_id}">${esc(e.order_no)}</a>` : ''}</span>
+            ${e.order_id
+              ? `<span class="chip ${e.paid ? 'delivered' : 'cancelled'}">${e.paid ? '입금 O' : '입금 X'}</span>`
+              : `<button class="btn sm ${e.paid ? 'ok' : 'danger'}" data-paid="${esc(e.id)}" data-v="${e.paid ? 0 : 1}">${e.paid ? '입금 O' : '입금 X'}</button>`}
           </div>
           <div class="spec">${cm(e.width_cm)} × ${cm(e.height_cm)} cm · 프레임 ${esc(e.frame || '-')} / 원단 ${esc(e.fabric || '-')} · ${esc(e.open_type || '-')}${e.kind === '프리' ? ' · 프리' : ''}</div>
           <div class="row between small" style="margin-top:6px">

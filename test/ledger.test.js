@@ -75,3 +75,32 @@ test('이전 앱에서 일회용 키로 옮기기 → 장부 조회·합계·입
   const plain = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}' });
   assert.equal(plain.status, 415);
 });
+
+test('장부에 새 앱 주문도 함께 (취소 제외, 입금은 승인 여부)', async () => {
+  const admin = client();
+  await admin('POST', '/api/auth/login', { username: 'admin', password: 'admin1234' });
+  const vendor = client();
+  await vendor('POST', '/api/auth/login', { username: 'vendor', password: 'vendor1234' });
+  const mk = () => vendor('POST', '/api/orders', {
+    product_type: 'free', width_mm: 1470, height_mm: 1370, frame_color: 'white', fabric_color: 'gray',
+    recipient_name: '최가상', recipient_phone: '010-3333-4444', address: '경남 창원시 1',
+  });
+  const a = (await mk()).data.order;
+  const b = (await mk()).data.order;
+  await admin('POST', `/api/orders/${b.id}/status`, { status: 'cancelled' });
+
+  const all = (await admin('GET', '/api/ledger?month=all')).data;
+  const row = all.rows.find((r) => r.order_id === a.id);
+  assert.ok(row);
+  assert.equal(all.rows.some((r) => r.order_id === b.id), false, '취소 주문은 빠져야 함');
+  assert.equal(row.channel, '업체');
+  assert.equal(row.width_cm, 147);
+  assert.equal(row.fabric, '그레이');
+  assert.equal(row.kind, '프리');
+  assert.equal(row.paid, false);
+  assert.equal(row.profit, row.price - row.cost);
+  assert.equal(all.totals.count, 4);
+
+  await admin('POST', `/api/orders/${a.id}/status`, { status: 'approved' });
+  assert.equal((await admin('GET', '/api/ledger?month=all')).data.rows.find((r) => r.order_id === a.id).paid, true);
+});

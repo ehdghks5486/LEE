@@ -4,9 +4,12 @@
  * 그 앱의 필드(날짜·채널·입금·수취인·cm 치수·색상·판매가·공장가·배송비·수수료·메모)를 바꾸지 않고 담는다.
  * 차익 = 판매가 − 공장가 − 배송비 − 수수료 (그 앱과 같은 계산).
  *
+ * 새 앱 주문(취소 제외)도 같은 모양으로 섞어 보여 준다 → 장부 하나로 전체를 본다. 이 행들은 주문에서 읽기만 한다.
+ *
  * 옮기기는 그 앱 화면에서 직접 보낸다: 관리자가 만든 10분짜리 일회용 키를 붙여 POST /api/ledger/import.
  */
 const crypto = require('node:crypto');
+const { FRAME_COLORS, FABRIC_COLORS } = require('./pricing');
 
 const KEY_TTL_MS = 10 * 60 * 1000;
 const importKeys = new Map(); // key → 만료 시각
@@ -64,14 +67,39 @@ function importEntries(db, entries) {
 
 const profitOf = (r) => r.price - r.cost - r.ship - r.fee;
 
+const colorName = (list, code) => (list.find((c) => c.code === code) || {}).name || code;
+
+/** 새 앱 주문 → 장부 행. 스마트스토어는 네이버가 받으니 입금 O, 업체 주문은 발주 승인(=입금 확인) 뒤부터 입금 O */
+function orderRows(db) {
+  return db.prepare(
+    `SELECT o.*, v.name AS vendor_name, p.name AS type_name FROM orders o
+     LEFT JOIN vendors v ON v.id = o.vendor_id LEFT JOIN product_types p ON p.code = o.product_type
+     WHERE o.status <> 'cancelled'`
+  ).all().map((o) => ({
+    id: `order-${o.id}`, order_id: o.id, order_no: o.order_no, source: 'app',
+    date: o.created_at.slice(0, 10), created_at: o.created_at,
+    channel: o.source === 'smartstore' ? '온라인' : '업체',
+    paid: o.source === 'smartstore' || !['received', 'on_hold'].includes(o.status),
+    name: o.source === 'smartstore' ? o.recipient_name : o.vendor_name || o.recipient_name,
+    phone: o.recipient_phone, address: [o.address, o.address_detail].filter(Boolean).join(' '),
+    width_cm: o.width_mm / 10, height_cm: o.height_mm / 10,
+    frame: colorName(FRAME_COLORS, o.frame_color), fabric: colorName(FABRIC_COLORS, o.fabric_color),
+    open_type: `${o.type_name || o.product_type}${o.quantity > 1 ? ` ×${o.quantity}` : ''}`, kind: o.product_type === 'free' ? '프리' : null,
+    price: o.product_amount + o.surcharge, cost: o.factory_cost, ship: o.delivery_cost || 0, fee: 0, memo: o.admin_memo,
+  }));
+}
+
 /** month: 'YYYY-MM' 또는 'all'(기본: 가장 최근 달) */
 function listLedger(db, { month, unpaid } = {}) {
-  const months = db.prepare("SELECT DISTINCT substr(date, 1, 7) AS m FROM ledger_entries ORDER BY m DESC").all().map((r) => r.m);
+  const all = [
+    ...db.prepare('SELECT * FROM ledger_entries').all().map(({ raw, ...r }) => ({ ...r, paid: !!r.paid })),
+    ...orderRows(db),
+  ].map((r) => ({ ...r, profit: profitOf(r) }));
+  const months = [...new Set(all.map((r) => r.date.slice(0, 7)))].sort().reverse();
   const m = month === 'all' || months.includes(month) ? month : months[0] || 'all';
-  const rows = db
-    .prepare(`SELECT * FROM ledger_entries ${m === 'all' ? '' : 'WHERE date LIKE ?'} ORDER BY date DESC, created_at DESC`)
-    .all(...(m === 'all' ? [] : [`${m}%`]))
-    .map(({ raw, ...r }) => ({ ...r, paid: !!r.paid, profit: profitOf(r) }));
+  const rows = all
+    .filter((r) => m === 'all' || r.date.startsWith(m))
+    .sort((a, b) => b.date.localeCompare(a.date) || String(b.created_at || '').localeCompare(String(a.created_at || '')));
   const unpaidRows = rows.filter((r) => !r.paid);
   const totals = {
     count: rows.length,
