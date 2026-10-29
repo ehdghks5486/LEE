@@ -115,7 +115,7 @@ test('송장 없이 출고 → 대신택배에서 1건 찾으면 자동 등록',
     { received_at: '26.10.27 15:04', tracking_no: '4001234567890', receiver: '박**', branch: '창원', status: '배송중' }, // 앞 테스트 주문에 이미 등록된 번호
   ];
   await server.tracking.runOnce();
-  assert.equal(searchCalls[0].phone, '010-5555-6666');
+  assert.ok(searchCalls.some((c) => c.phone === '010-5555-6666'));
   const o = await factory('GET', `/api/orders/${id}`);
   assert.equal(o.data.order.tracking_no, '4009999999991');
   assert.equal(o.data.tracking_lookup.status, 'found');
@@ -176,4 +176,37 @@ test('직접 입력하면 자동 찾기 중단, 업체에는 자동 찾기 정�
   searchCalls = [];
   await server.tracking.runOnce();
   assert.ok(!searchCalls.some((q) => q.phone === '010-2222-3333'), '직접 입력 뒤에도 조회함');
+});
+
+test('공장이 출고를 안 눌러도: 승인된 주문 송장을 찾아 두고, 관리자가 승인하면 출고 완료', async () => {
+  const admin = client();
+  await admin('POST', '/api/auth/login', { username: 'admin', password: 'admin1234' });
+  const factory = client();
+  await factory('POST', '/api/auth/login', { username: 'factory', password: 'factory1234' });
+  const vendor = client();
+  await vendor('POST', '/api/auth/login', { username: 'vendor', password: 'vendor1234' });
+  const created = await vendor('POST', '/api/orders', {
+    product_type: 'single', width_mm: 1000, height_mm: 2000, frame_color: 'black', fabric_color: 'gray',
+    recipient_name: '박선발', recipient_phone: '010-2222-3333', address: '경남 창원시 1',
+  });
+  const id = created.data.order.id;
+  await admin('POST', `/api/orders/${id}/status`, { status: 'approved' });
+
+  searchResults = [];
+  await server.tracking.runOnce();
+  assert.equal(server.tracking.get(id).status, 'pending', '승인된 주문이 조회 줄에 올라가야 함');
+
+  searchResults = [{ received_at: '26.10.29 13:39', tracking_no: '7400000000001', item: '블라인드', receiver: '박**', branch: '망우리', quantity: 1, status: '발송' }];
+  await server.tracking.runOnce();
+  let d = (await admin('GET', `/api/orders/${id}`)).data;
+  assert.equal(d.tracking_lookup.status, 'awaiting');
+  assert.equal(d.order.status, 'approved', '승인 전에는 출고로 바꾸지 않음');
+  assert.equal(d.order.tracking_no, null);
+
+  assert.equal((await factory('POST', `/api/orders/${id}/tracking-lookup`, { action: 'choose', tracking_no: '7400000000001' })).status, 403);
+  const r = await admin('POST', `/api/orders/${id}/tracking-lookup`, { action: 'choose', tracking_no: '7400000000001' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.order.status, 'shipped');
+  assert.equal(r.data.order.tracking_no, '7400000000001');
+  assert.equal(r.data.tracking_lookup.status, 'found');
 });

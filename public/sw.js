@@ -1,7 +1,7 @@
 /* BLACKOUT 주문관리 PWA 서비스워커
    - 앱 셸(정적 파일)은 캐시 우선
    - API 요청은 항상 네트워크 (주문 데이터는 캐시하지 않음) */
-const CACHE = 'blackout-shell-v5';
+const CACHE = 'blackout-shell-v6';
 const SHELL = [
   '/', '/index.html', '/core.js', '/app.js', '/styles.css', '/manifest.webmanifest',
   '/vendor/', '/vendor/index.html', '/vendor.js', '/vendor/manifest.webmanifest',

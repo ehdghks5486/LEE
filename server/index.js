@@ -167,6 +167,14 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
     trackingFound(o) {
       if (o.vendor_id) push.notify(['vendor'], { title: '송장번호 등록', body: `${o.order_no} · ${o.tracking_carrier} ${o.tracking_no}`, url: orderUrl(o, 'vendor'), tag: `order-${o.id}` }, { vendorId: o.vendor_id });
     },
+    trackingAwaiting(o, cands) {
+      const c = cands[0];
+      const body = cands.length === 1
+        ? `${o.order_no} · ${o.recipient_name} · 대신택배 ${c.tracking_no} (${c.received_at} 접수)
+맞으면 승인해 주세요 → 출고 완료`
+        : `${o.order_no} · ${o.recipient_name} · 송장 후보 ${cands.length}건, 맞는 것을 골라 승인해 주세요.`;
+      push.notify(['admin'], { title: '송장 찾음 · 승인하면 출고', body, url: orderUrl(o), tag: `order-${o.id}` });
+    },
     trackingAttention(o, kind, n) {
       const body = kind === 'multiple' ? `${o.order_no} · 대신택배 송장 후보 ${n}건, 맞는 것을 골라 주세요.` : `${o.order_no} · 대신택배에서 송장을 찾지 못했습니다. 직접 입력해 주세요.`;
       push.notify(['admin', 'factory'], { title: '송장 확인 필요', body, url: orderUrl(o), tag: `order-${o.id}` });
@@ -188,6 +196,7 @@ function createApp({ dbPath, secureCookies = false, smartstore = {}, autoStart =
     db, search: trackingSearch, delayMs: trackingDelayMs,
     onFound: (order) => { sync.dispatchOrder(order).catch(() => {}); notifyEvent.trackingFound(order); },
     onAttention: notifyEvent.trackingAttention,
+    onAwaiting: notifyEvent.trackingAwaiting,
   });
   orders.setHooks({
     afterShipped: (order) => {

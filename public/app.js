@@ -100,9 +100,9 @@
           <dt>수령인</dt><dd>${esc(o.recipient_name)}</dd>
           <dt>연락처</dt><dd><a href="tel:${esc(o.recipient_phone)}">${esc(o.recipient_phone)}</a></dd>
           <dt>주소</dt><dd>${o.zip_code ? `(${esc(o.zip_code)}) ` : ''}${esc(o.address)} ${esc(o.address_detail || '')}</dd>
-          <dt>택배사 / 송장</dt><dd>${o.tracking_no ? `${esc(o.tracking_carrier)} <strong>${esc(o.tracking_no)}</strong>` : tl && !['found', 'manual'].includes(tl.status) ? `${esc(o.tracking_carrier)} <span class="muted">송장 찾는 중</span>` : '<span class="muted">미등록</span>'}</dd>
+          <dt>택배사 / 송장</dt><dd>${o.tracking_no ? `${esc(o.tracking_carrier)} <strong>${esc(o.tracking_no)}</strong>` : tl && !['found', 'manual'].includes(tl.status) ? `${esc(o.tracking_carrier || '대신택배')} <span class="muted">${tl.status === 'awaiting' ? '송장 찾음 · 승인 대기' : '송장 찾는 중'}</span>` : '<span class="muted">미등록</span>'}</dd>
         </dl>
-        ${!o.tracking_no && tl && !['found', 'manual'].includes(tl.status) ? trackingLookupBox(tl) : ''}
+        ${!o.tracking_no && tl && !['found', 'manual'].includes(tl.status) ? trackingLookupBox(tl, o, role) : ''}
       </div>
 
       ${role !== 'factory' ? `
@@ -254,7 +254,15 @@
   }
 
   // 송장 없이 출고된 대신택배 주문: 자동 찾기 상태 · 후보 고르기
-  function trackingLookupBox(tl) {
+  function trackingLookupBox(tl, o, role) {
+    const preShip = ['approved', 'in_production'].includes(o.status);
+    if (tl.status === 'awaiting') {
+      return `<div class="notice no-print"><strong>대신택배에서 송장을 찾았습니다</strong> · 맞으면 승인하세요. 출고 완료로 바뀌고${o.source === 'smartstore' ? ' 네이버 발송처리까지 됩니다' : ' 송장이 등록됩니다'}.
+        <div class="table-wrap"><table><thead><tr><th>접수</th><th>송장번호</th><th>받는 분</th><th>도착 영업소</th><th>상태</th><th></th></tr></thead><tbody>
+        ${tl.candidates.map((c) => `<tr><td>${esc(c.received_at)}</td><td>${esc(c.tracking_no)}</td><td>${esc(c.receiver)}</td><td>${esc(c.branch)}</td><td>${esc(c.status)}</td>
+          <td>${role === 'admin' ? `<button class="btn sm primary" data-lookup="${esc(c.tracking_no)}">승인 · 출고</button>` : ''}</td></tr>`).join('')}
+        </tbody></table></div></div>`;
+    }
     const tried = tl.attempts ? ` · ${tl.attempts}회 조회${tl.last_error ? ` · <span class="error">${esc(tl.last_error)}</span>` : ''}` : '';
     if (tl.status === 'multiple') {
       return `<div class="notice no-print"><strong>송장 후보 ${tl.candidates.length}건</strong> · 맞는 송장을 골라 주세요.
@@ -267,7 +275,7 @@
       return `<div class="notice no-print">대신택배에서 송장을 찾지 못했습니다${tried}. 아래 「송장 수정」으로 직접 입력하거나 다시 찾아 주세요.
         <div class="actions"><button class="btn sm" data-lookup="retry">지금 다시 찾기</button></div></div>`;
     }
-    return `<div class="notice no-print">대신택배에서 받는 분 전화번호로 송장번호를 찾는 중입니다 (30분마다${tried}). 찾으면 자동으로 등록됩니다.
+    return `<div class="notice no-print">대신택배에서 받는 분 전화번호로 송장번호를 찾는 중입니다 (30분마다${tried}). ${preShip ? '찾으면 알림을 보내고, 승인하면 출고 완료로 바뀝니다.' : '찾으면 자동으로 등록됩니다.'}
       <div class="actions"><button class="btn sm" data-lookup="retry">지금 다시 찾기</button></div></div>`;
   }
 
